@@ -5,7 +5,7 @@ from setuptools import setup
 setup(
     name='bibim',
     version='0.1.0',
-    description='A simple command-line tool for managing computer science bibliography.',
+    description='Minimalistic, markdown-based reference manager for computer science research',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     author='In Gim',
