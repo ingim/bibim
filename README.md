@@ -1,4 +1,5 @@
 # bibim
+[![PyPI version](https://img.shields.io/pypi/v/bibim)](https://pypi.org/project/bibim/)
 
 bibim is a command-line tool designed to simplify bibliography management for computer science research. It allows you to maintain your references directly within markdown files, automatically fetch and update citation data, and generate BibTeX files.
 
