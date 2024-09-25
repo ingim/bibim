@@ -14,32 +14,40 @@ bibim is a command-line tool designed to simplify bibliography management for co
 Install bibim using pip:
 
 ```bash
-pip install bibim
+$ pip install bibim
 ```
 
 ## Usage
 
 
-### 1. Create a new markdown
+### 1. Initialize a new bibim repository
 
-Initialize a markdown file with a predefined structure for managing your references.
+Similar to initializing a new git repository, you can convert a folder into a bibim repository with `bibim init`. This will create a `index.md` file in the current directory, along with a `.bibim/settings.json` file to store your preferences.
+
 ```bash
-bibim new ref.md
+$ bibim init
 ```
 
-Alternatively, you can add the following table anywhere in an existing markdown file to make it bibim-compatible.
-```bash
-| Title | Authors | Publication | Year | URL | Citation Count | Summary |
-|-------|---------|-------------|------|-----|----------------|---------|
+**Overview of the `.bibim/settings.json` file**:
+
+```json
+{
+  "ai": {
+    "generate_summary": true,
+    "summary_prompt": "(omitted)"
+  },
+  "index": "index.md",
+  "references": "./references"  
+}
 ```
 
 
 ### 2. Add a reference
 
-Add a reference to your bibliography markdown file by simply typing the paper title or the author names. The reference will be appended to the table.
+Add a reference to your bibliography markdown file by simply typing the paper title or the author names. The reference will be appended to the table. This will create a new file as `./references/{author}{year}{first word of title}.md`, with the full metadata, including the paper abstract. Also, the new index will be added in the `index.md`, with concise metadata like the abbreviated author names (only the first and the last author), title, venue, year, and citation count, as well as the link to the full reference markdown file.
 
 ```bash
-bibim add ref.md "attn is all u need vaswani"
+bibim add "attn is all u need vaswani"
 ```
 
 - **Automated metadata retrieval**: Searches [Google Scholar](https://scholar.google.com) and [DBLP](https://dblp.org) for the paper title to fill in authors, publication venue, and year.
@@ -54,7 +62,7 @@ bibim add ref.md "attn is all u need vaswani"
 Updates all reference metadata in the bibliography markdown file. This keeps any user-added columns or notes intact.
 
 ```bash
-bibim update ref.md
+bibim update
 ```
 
 
@@ -63,7 +71,7 @@ bibim update ref.md
 Generates a BibTeX file from your bibliography markdown file. bibim formats entry IDs as `[author][year][first word of title]` using lowercase letters and numbers.
 
 ```bash
-bibim bib ref.md
+bibim bibtex
 ```
 
 ## Contributing

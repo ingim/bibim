@@ -1,123 +1,203 @@
 import argparse
 import os
+import json
 import re
+
 import requests
 import feedparser
 from scholarly import scholarly
 import openai
 
+from .paper import Paper, Author, PaperMarkdown, IndexMarkdown
 
-def create_new_bibliography(filename):
-    """Creates a new markdown file with the necessary table headers."""
-    with open(filename, 'w') as f:
-        f.write("# Bibliography\n\n")
-        f.write("| Title | Authors | Publication | Year | URL | Citation Count | Summary |\n")
-        f.write("|-------|---------|-------------|------|-----|----------------|---------|\n")
-    print(f"New bibliography file '{filename}' created.")
+SETTINGS_FILE = ".bibim/settings.json"
 
 
-def search_arxiv(title, authors=None):
+# Initialize bibim repository
+def init_repository():
+    """Initializes a bibim repository by creating index.md and settings.json."""
+    os.makedirs(".bibim", exist_ok=True)
+    with open(SETTINGS_FILE, 'w') as f:
+        settings = {
+            "index": "index.md",
+            "references": "./references",
+            "paper_template": {
+                "entries": {
+                    "title": ["# ", "\n"],
+                    "authors": ["**Authors**: ", "\n"],
+                    "venue": ["**Venue**: ", "\n"],
+                    "year": ["**Year**: ", "\n"],
+                    "abstract": ["**Abstract**: ", "\n"],
+                    "links": ["**Links**: ", "\n"],
+                },
+                "layout": "{title}{authors}{venue}{year}{abstract}{links}"
+            },
+            "index_template": {
+                "separator": ["# ", "\n"],
+                "headers": {
+                    "title": "Title",
+                    "concise_authors": "Authors",
+                    "venue": "Venus",
+                    "year": "Year",
+                    "citations": "Citations",
+                    "reference": "Reference"
+                },
+                "columns": ["title", "concise_authors", "venue", "year", "citations", "reference"]
+            }
+
+        }
+        json.dump(settings, f, indent=4)
+
+    # Create index.md file
+    IndexMarkdown.create_empty('index.md')
+
+    os.makedirs("./references", exist_ok=True)
+
+    print("Initialized bibim repository.")
+
+
+# Read the settings file
+def load_settings():
+    """Loads settings from the settings.json file."""
+    if not os.path.exists(SETTINGS_FILE):
+        print(f"Error: {SETTINGS_FILE} not found. Please run 'bibim init' to initialize.")
+        exit(1)
+
+    with open(SETTINGS_FILE, 'r') as f:
+        return json.load(f)
+
+
+def search_arxiv(title: str, authors: list[Author] | None = None) -> Paper | None:
     """Searches arXiv for the paper title and authors' last names, returns the arXiv URL if found."""
     query = f"ti:\"{title}\""
     if authors:
-        # Extract authors' last names
-        authors_last_name = [author.split()[-1] for author in authors]
-        # Include authors' last names in the query to improve accuracy
-        query += ' '.join(authors_last_name)
+        # Include the first authors' last name to improve search accuracy
+        query += '+AND+au:\"' + authors[0].last_name + '\"'
     # Construct the search query
     url = f"https://export.arxiv.org/api/query?search_query={requests.utils.quote(query)}&max_results=1"
     response = requests.get(url)
     if response.status_code != 200:
         print("Error accessing arXiv API.")
-        return None
+        return
     feed = feedparser.parse(response.content)
     if feed.entries:
         entry = feed.entries[0]
-        arxiv_url = entry.get('id', '')
-        return arxiv_url
+        arxiv_id = entry.get('id', '')
+
+        # Ensure that the title matches
+        arxiv_title = re.sub(r"\s+", " ", entry.get('title', '')).strip()
+        if title.lower() != arxiv_title.lower():
+            return
+
+        return Paper(
+            title=arxiv_title,
+            authors=authors,
+            arxiv_id=arxiv_id,
+        )
     else:
-        return None
+        return
 
 
-def search_google_scholar(title):
+def search_google_scholar(title: str, max_results: int = 3) -> list[Paper]:
     """Searches for the paper title on Google Scholar and returns matching papers."""
     search_query = scholarly.search_pubs(title)
     papers = []
     try:
-        for _ in range(3):
+        for _ in range(max_results):
             paper = next(search_query)
+
+            paper_title = paper['bib'].get('title', '').strip()
+            paper_authors_data = paper['bib'].get('author', '').strip()
+            if isinstance(paper_authors_data, str):
+                paper_authors = [Author(author) for author in re.split(' and ', paper_authors_data)]
+            elif isinstance(paper_authors_data, list):
+                paper_authors = [Author(author) for author in paper_authors_data]
+            else:
+                paper_authors = []
+
+            paper_num_citations = paper.get('num_citations', 0)
+            paper_abstract = paper['bib'].get('abstract', '')
+            paper_url = paper.get('pub_url', '')
+
+            paper = Paper(
+                title=paper_title,
+                authors=paper_authors,
+                url=paper_url,
+                abstract=paper_abstract,
+                num_citations=paper_num_citations
+            )
+
             papers.append(paper)
     except StopIteration:
         pass
+
     return papers
 
 
-def search_dblp(title, authors=None):
+def search_dblp(title: str, authors: list[Author] | None = None) -> Paper | None:
     """Searches for the paper on DBLP using title and authors."""
     query = title
     if authors:
-        # Extract author's last name
-        authors_last_name = [author.split()[-1] for author in authors]
+        # Include authors' last names in the query to improve accuracy
+        authors_last_name = [author.last_name for author in authors]
+        query += ' ' + ' '.join(authors_last_name)
 
-        # Include authors in the query to improve accuracy
-        author_query = ' '.join(authors_last_name)
-        query += ' ' + author_query
     url = f'https://dblp.org/search/publ/api?q={requests.utils.quote(query)}&format=json'
     response = requests.get(url)
     data = response.json()
     hits = data.get('result', {}).get('hits', {}).get('hit', [])
 
-    def read_authors(authors_raw):
-        if not authors_raw:
-            return ''
-        if not isinstance(authors_raw, list):
-            authors_raw = [authors_raw]
-        authors = []
-        for author in authors_raw:
+    def parse_entry(entry: dict) -> Paper:
+
+        info = entry.get('info', {})
+        paper_title_raw = info.get('title')
+        paper_authors_raw = info.get('authors', {}).get('author', [])
+
+        # parse title
+        paper_title = re.sub(r'\s+', ' ', paper_title_raw).strip()
+
+        if paper_title.endswith('.'):
+            paper_title = paper_title[:-1]
+
+        # parse authors
+        if not isinstance(paper_authors_raw, list):
+            paper_authors_raw = [paper_authors_raw]
+
+        paper_authors = []
+        for author in paper_authors_raw:
             author_name = author.get('text', '') if isinstance(author, dict) else author
             author_name_clean = re.sub(r'\s+\d{4}$', '', author_name)
-            authors.append(author_name_clean)
-        return authors
+            paper_authors.append(Author(author_name_clean))
 
-    def read_title(title_raw):
+        # parse venue
+        paper_venue = info.get('venue')
 
-        title = re.sub(r'\s+', ' ', title_raw).strip()
+        # parse year
+        paper_year = int(info.get('year'))
 
-        # remove trailing period
-        if title.endswith('.'):
-            title = title[:-1]
+        # parse URL
+        paper_url = info.get('ee')
 
-        return title
+        return Paper(
+            title=paper_title,
+            authors=paper_authors,
+            venue=paper_venue,
+            year=paper_year,
+            url=paper_url
+        )
 
     if hits:
         # Attempt to find an exact match
-        for hit in hits:
-            info = hit.get('info', {})
-            hit_title = read_title(info.get('title'))
-            hit_authors = read_authors(info.get('authors', {}).get('author', []))
-            hit_authors_last_names = [author.split()[-1] for author in hit_authors]
+        for entry in hits:
+            paper = parse_entry(entry)
+            if paper.title.lower() == title.lower():
+                if authors and len(authors) > 1:
+                    if paper.authors[0].last_name.lower() != authors[0].last_name.lower():
+                        continue
+                return paper
 
-            if hit_title.lower() == title.lower() and set(hit_authors_last_names) == set(authors_last_name):
-                return {
-                    'title': hit_title,
-                    'authors': hit_authors,
-                    'venue': info.get('venue'),
-                    'year': info.get('year'),
-                    'url': info.get('ee')
-                }
-
-        # Return the first hit if no exact match is found
-        info = hits[0].get('info', {})
-        return {
-            'title': read_title(info.get('title')),
-            'authors': read_authors(info.get('authors', {}).get('author', [])),
-            'venue': info.get('venue'),
-            'year': info.get('year'),
-            'url': info.get('ee')
-        }
-    else:
-        print(f"No results found for '{title}' on DBLP.")
-        return None
+    print(f"No results found for '{title}' on DBLP.")
+    return None
 
 
 def generate_summary(abstract):
@@ -150,253 +230,152 @@ def generate_summary(abstract):
         return "Summary not available."
 
 
-def read_table(filename):
-    """Reads the markdown table from the file and returns entries and headers."""
-    with open(filename, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-
-    # Find the start of the table
-    table_start = None
-    for i, line in enumerate(lines):
-        if line.strip().startswith('|') and 'Title' in line:
-            table_start = i
-            break
-
-    if table_start is None:
-        print(f"No table found in '{filename}'.")
-        return [], []
-
-    # Extract the table lines
-    table_lines = lines[table_start:]
-    # Remove all separator lines
-    table_lines = [line for line in table_lines if not re.match(r'^\|\s*(-+\s*\|)+\s*$', line.strip())]
-
-    # Parse the table
-    headers_line = table_lines[0]
-    headers = [h.strip() for h in headers_line.strip().strip('|').split('|')]
-    entries = []
-    for line in table_lines[2:]:
-        if not line.strip().startswith('|'):
-            break  # End of table
-        values = [v.strip() for v in line.strip().strip('|').split('|')]
-        # Ensure values match headers length
-        if len(values) < len(headers):
-            values += [''] * (len(headers) - len(values))
-        elif len(values) > len(headers):
-            values = values[:len(headers)]
-        entry = dict(zip(headers, values))
-        entries.append(entry)
-    return entries, headers
-
-
-def write_table(filename, entries, headers):
-    """Writes the list of dictionaries to the markdown file, updating only the table."""
-    with open(filename, 'r', encoding='utf-8') as f:
-        content = f.read()
-
-    # Find the start and end of the table
-    lines = content.splitlines()
-    table_start = None
-    table_end = None
-
-    for i, line in enumerate(lines):
-        if line.strip().startswith('|') and 'Title' in line:
-            table_start = i
-            break
-
-    if table_start is None:
-        print(f"No table found in '{filename}'. Cannot write table.")
-        return
-
-    # Find the end of the table
-    for j in range(table_start + 1, len(lines)):
-        if not lines[j].strip().startswith('|'):
-            table_end = j
-            break
-    else:
-        table_end = len(lines)
-
-    # Build the table content
-    table_lines = []
-    table_lines.append('| ' + ' | '.join(headers) + ' |')
-    table_lines.append('| ' + ' | '.join(['---'] * len(headers)) + ' |')
-    for entry in entries:
-        row_values = []
-        for h in headers:
-            value = entry.get(h, '')
-            if isinstance(value, list):
-                # Convert list to string by joining with commas
-                value_str = ', '.join(str(v) for v in value)
-            else:
-                value_str = str(value)
-            value_str = value_str.replace('|', '\\|')
-            row_values.append(value_str)
-        row = '| ' + ' | '.join(row_values) + ' |'
-        table_lines.append(row)
-
-    # Replace the old table with the new table content
-    new_lines = lines[:table_start] + table_lines + lines[table_end:]
-
-    new_content = '\n'.join(new_lines)
-
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(new_content)
-
-
-def add_reference(filename, title, existing_entry=None, ask_user=False):
-    """Adds a reference to the bibliography markdown file."""
-    # First, search the paper on Google Scholar
-
+def find_paper(title: str, ask_user: bool = False) -> Paper | None:
+    # Step 1. Search on Google Scholar
     print(f"Searching on Google Scholar...")
-
     papers = search_google_scholar(title)
     if not papers:
         print(f"No results found on Google Scholar.")
         return
     elif len(papers) == 1:
-        selected_paper = papers[0]
+        google_paper = papers[0]
     elif ask_user:
         # Prompt the user to choose one
         print(f"Multiple papers found on Google Scholar:")
         for idx, paper in enumerate(papers):
-            paper_title = paper['bib'].get('title', 'No title')
-            paper_authors = paper['bib'].get('author', 'No authors')
-            if isinstance(paper_authors, list):
-                paper_authors_str = paper_authors[0] + ' et al.'
-            else:
-                paper_authors_str = paper_authors
-            print(f"    {idx + 1}. {paper_title} by {paper_authors_str}")
+            paper_authors_str = paper.authors[0].full_name + (' et al.' if len(paper.authors) > 1 else '')
+            print(f"    {idx + 1}. {paper.title} by {paper_authors_str}")
         try:
             choice = int(input(f"Please select the correct paper (1-{len(papers)}) or 0 to cancel: "))
             if choice == 0:
                 return
             elif 1 <= choice <= len(papers):
-                selected_paper = papers[choice - 1]
+                google_paper = papers[choice - 1]
             else:
                 return
         except ValueError:
             return
     else:
-        selected_paper = papers[0]
+        google_paper = papers[0]
 
-    # Extract title and authors
-    paper_title = selected_paper['bib'].get('title', '')
-    paper_authors_data = selected_paper['bib'].get('author', '')
-    if isinstance(paper_authors_data, str):
-        paper_authors = [author.strip() for author in re.split(' and ', paper_authors_data)]
-    elif isinstance(paper_authors_data, list):
-        paper_authors = [author.strip() for author in paper_authors_data]
-    else:
-        paper_authors = []
-
-    # Search on DBLP using the title and authors
+    # Step 3. Search on DBLP using the title and authors
     print(f"Searching on DBLP...")
-    metadata = search_dblp(paper_title, paper_authors)
-    if not metadata:
+    dblp_paper = search_dblp(google_paper.title, google_paper.authors)
+
+    if not dblp_paper:
+        print(f"No results found on DBLP.")
         return
 
-    # Get citation count
-    citation_count = selected_paper.get('num_citations', 0)
-
-    # Generate summary using the abstract from Google Scholar
-    abstract = selected_paper['bib'].get('abstract', '')
-    print(f"Generating summary using ChatGPT...")
-    summary = generate_summary(abstract) if abstract else "No abstract available."
-    # Get URLs
-    pub_url = selected_paper.get('pub_url', '')
-
+    # Step 4. Search on arXiv using the title and authors
     print(f"Searching on arXiv...")
-    arxiv_url = search_arxiv(paper_title, paper_authors)
+    arxiv_paper = search_arxiv(google_paper.title, google_paper.authors)
 
-    # Build the URL cell content
-    url_cell = ''
-    if pub_url:
-        url_cell += f"[link]({pub_url})"
-    if arxiv_url:
-        if url_cell:
-            url_cell += ' '
-        url_cell += f"[arXiv]({arxiv_url})"
+    # Step 5. Consolidate the metadata
+    paper = Paper(
+        title=dblp_paper.title,
+        authors=dblp_paper.authors,
+        year=dblp_paper.year,
+        venue=dblp_paper.venue,
+        url=dblp_paper.url,
+        arxiv_id=arxiv_paper.arxiv_id if arxiv_paper else None,
+        abstract=google_paper.abstract,
+        num_citations=google_paper.num_citations
+    )
 
-    if not url_cell:
-        # Use metadata URL if available
-        metadata_url = metadata.get('url', '')
-        if metadata_url:
-            if isinstance(metadata_url, list):
-                metadata_url = metadata_url[0]
-            url_cell = f"[link]({metadata_url})"
-        else:
-            url_cell = "No URL available"
+    return paper
 
-    # Get Google Scholar URL
-    gs_url = f"https://scholar.google.com/scholar?q={requests.utils.quote(paper_title)}"
 
-    # Build Citation Count cell with link to Google Scholar page
-    citation_cell = f"[{citation_count}]({gs_url})"
+def add_reference(title):
+    """Adds a reference to the bibliography markdown file."""
 
-    # Read existing entries and headers
-    entries, headers = read_table(filename)
+    settings = load_settings()
+    index_file = settings.get("index", "index.md")
+    references_dir = settings.get("references", "./references")
+
+    index_md = IndexMarkdown.open(index_file)
+    paper = find_paper(title, ask_user=True)
+
+    if not paper:
+        return
+
+    # get paper id
+    paper_id = paper.get_id()  # e.g., gim2023prompt
+    paper_ref_path = os.path.join(references_dir, paper_id + ".md")
+
+    if os.path.exists(paper_ref_path):
+        # increment a, b, c, ... to the filename and see if it exists
+        for i in range(97, 123):
+            paper_ref_path = os.path.join(references_dir, paper_id + f"{chr(i)}.md")
+            if not os.path.exists(paper_ref_path):
+                paper_id += f"{chr(i)}"
+                break
+
+    PaperMarkdown.create(paper, paper_ref_path)
 
     # Prepare the reference entry as a dictionary
     entry = {
-        'Title': metadata['title'],
-        'Authors': metadata['authors'],
-        'Publication': metadata['venue'],
-        'Year': metadata['year'],
-        'URL': url_cell,
-        'Citation Count': citation_cell,
-        'Summary': summary,
+        'Title': f'[{paper.title}]({paper_ref_path})',
+        'Authors': paper.get_concise_authors(),
+        'Venue': paper.venue,
+        'Year': paper.year,
+        'Citations': paper.num_citations,
     }
 
-    # If existing_entry is provided, preserve extra columns
-    if existing_entry:
-        for h in headers:
-            if h not in entry:
-                entry[h] = existing_entry.get(h, '')
+    index_md.append(entry)
 
-    # Ensure all headers are present in the entry
-    for h in headers:
-        if h not in entry:
-            entry[h] = ''
-
-    # Add the new entry
-    entries.append(entry)
-
-    # Write back the table
-    write_table(filename, entries, headers)
-
-    print(f"Reference '{metadata['title']}' added to '{filename}'")
+    print(f"Reference '{paper.title}' added as '{paper_id}'.")
 
 
-def update_references(filename):
+def update_references():
     """Updates the references in the bibliography markdown file."""
-    entries, headers = read_table(filename)
-    for entry in entries:
-        title = entry.get('Title', '')
-        if not title:
-            continue
+
+    settings = load_settings()
+    index_file = settings.get("index", "index.md")
+
+    # Read the index file
+    index_md = IndexMarkdown.open(index_file)
+
+    new_entries = []
+
+    # Update each reference
+    for entry in index_md.entries:
+        title_raw = entry.get('Title', '')
+        title = title_raw.split('](')[0][1:]
+        paper_ref_path = title_raw.split('](')[1][:-1]  # e.g., gim2023prompt
+
         print(f"Updating '{title}'...")
-        # Remove the reference
-        remove_reference(filename, title)
-        # Re-add the reference, preserving existing entry for extra columns
-        add_reference(filename, title, existing_entry=entry)
-    print(f"References in '{filename}' have been updated.")
 
+        paper = find_paper(title + " " + entry.get('Authors', '').split()[-1], ask_user=False)
 
-def remove_reference(filename, title):
-    """Removes a reference from the bibliography markdown file."""
-    # Read existing entries and headers
-    entries, headers = read_table(filename)
+        if not paper:
+            print(f"No metadata found for '{title}'. Skipping.")
+            new_entries.append(entry)
+            continue
 
-    # Find the entry to remove
-    new_entries = [entry for entry in entries if entry.get('Title', '') != title]
+        # read markdown
+        existing_paper_file = PaperMarkdown.from_file(paper_ref_path)
+        existing_paper_file.update(paper)
 
-    if len(entries) == len(new_entries):
-        print(f"Reference '{title}' not found in '{filename}'.")
-        return
+        # Prepare the reference entry as a dictionary
+        new_entry = {
+            'Title': f'[{paper.title}]({paper_ref_path})',
+            'Authors': paper.get_concise_authors(),
+            'Venue': paper.venue,
+            'Year': paper.year,
+            'Citations': paper.num_citations,
+        }
+
+        # Ensure all headers are present in the entry
+        for h in headers:
+            if h not in new_entry:
+                new_entry[h] = ''
+
+        new_entries.append(new_entry)
+        print(f"Updated '{title}'.")
 
     # Write back the table
-    write_table(filename, new_entries, headers)
-    print(f"Reference '{title}' removed from '{filename}'.")
+    write_table(index_file, new_entries, headers)
+    print(f"References have been updated.")
 
 
 def generate_bibtex(filename):
@@ -405,11 +384,30 @@ def generate_bibtex(filename):
     bibtex_entries = ""
     existing_keys = {}
     for entry in entries:
-        title = entry.get('Title', '')
-        authors = entry.get('Authors', '')
-        venue = entry.get('Publication', '')
-        year = entry.get('Year', '')
-        url_cell = entry.get('URL', '')
+        title_raw = entry.get('Title', '')
+
+        title = title_raw.split('](')[0][1:]
+        paper_ref_path = title_raw.split('](')[1][:-1]  # e.g., gim2023prompt
+
+        # read the markdown file
+        with open(paper_ref_path, 'r') as f:
+            lines = f.readlines()
+
+        # Extract metadata from the markdown file
+        authors = ''
+        venue = ''
+        year = ''
+        url_cell = ''
+        for line in lines:
+            if line.startswith('**Authors**:'):
+                authors = line.split(':', 1)[1].strip()
+            elif line.startswith('**Venue**:'):
+                venue = line.split(':', 1)[1].strip()
+            elif line.startswith('**Year**:'):
+                year = line.split(':', 1)[1].strip()
+            elif line.startswith('**Links**:'):
+                url_cell = line.split(':', 1)[1].strip()
+
         if not (title and authors and year):
             continue
         # Extract the last name of the first author
@@ -456,29 +454,23 @@ def main():
     parser = argparse.ArgumentParser(description='Bibim: A command line tool for managing bibliography.')
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
-    parser_new = subparsers.add_parser('new', help='Create a new bibliography database')
-    parser_new.add_argument('filename', help='Markdown file name')
-
+    parser_new = subparsers.add_parser('init', help='Initialize a new bibliography repository')
     parser_add = subparsers.add_parser('add', help='Add a reference')
-    parser_add.add_argument('filename', help='Markdown file name')
     parser_add.add_argument('title', help='Paper title')
 
     parser_update = subparsers.add_parser('update', help='Update the references')
-    parser_update.add_argument('filename', help='Markdown file name')
-
-    parser_bibtex = subparsers.add_parser('bib', help='Generate a bibtex file')
-    parser_bibtex.add_argument('filename', help='Markdown file name')
+    parser_bibtex = subparsers.add_parser('bibtex', help='Generate a bibtex file')
 
     args = parser.parse_args()
 
-    if args.command == 'new':
-        create_new_bibliography(args.filename)
+    if args.command == 'init':
+        init_repository()
     elif args.command == 'add':
-        add_reference(args.filename, args.title, ask_user=True)
+        add_reference(args.title, ask_user=True)
     elif args.command == 'update':
-        update_references(args.filename)
-    elif args.command == 'bib':
-        generate_bibtex(args.filename)
+        update_references()
+    elif args.command == 'bibtex':
+        generate_bibtex()
     else:
         parser.print_help()
 
