@@ -3,12 +3,20 @@ from __future__ import annotations
 import re
 
 
-def extract_between(text: str, prefix: str, suffix: str):
+def extract_between(text: str, prefix: str, suffix: str) -> str | None:
     pattern = re.escape(prefix) + r'(.+?)' + re.escape(suffix)
     match = re.search(pattern, text)
     if match:
         return match.group(1)
     return None
+
+
+def strip_markdown_link(text: str) -> str:
+    pattern = r'\[([^\]]+)\]\([^\)]+\)'
+    match = re.search(pattern, text)
+    if match:
+        return match.group(1)
+    return text
 
 
 class Template:
@@ -23,21 +31,25 @@ class Template:
 
 
 class Index:
+    path: str
     tables: dict[str, Table]
     template: Template
 
-    def __init__(self):
+    def __init__(self, path: str, template: Template):
+        self.path = path
+        self.template = template
         self.tables = {}
 
-    def load(self, path: str, template: Template):
+    @staticmethod
+    def load(path: str, template: Template) -> Index:
+
+        index = Index(path, template)
 
         # Load tables from path
         with open(path, 'r') as f:
             lines = f.readlines()
 
         # Find the start of the table
-        table_start = None
-
         _table_signature = re.sub(r'\s+', '', '|'.join(template.columns))
         table_title = None
 
@@ -50,9 +62,11 @@ class Index:
                 table_title = _table_title
 
             # remove all whitespace in line using regex
-            if _table_signature == re.sub(r'\s+', '', line):
-                ...
-            table_start = i + 1 # skip the header line
+            if _table_signature != re.sub(r'\s+', '', line):
+                i += 1
+                continue
+
+            table_start = i + 2  # skip the header line and the separator line
 
             # find the end of the table
             while i < len(lines):
@@ -60,72 +74,117 @@ class Index:
                     break
                 i += 1
 
+            table_end = i
 
+            if table_end <= table_start:
+                # empty table
+                index.tables[table_title] = Table(table_start, table_start)
+                continue
 
-        if table_start is None:
-            print(f"No table found in '{path}'.")
-            return [], []
+            table_lines = lines[table_start:table_end]
 
-        # Extract the table lines
-        table_lines = lines[table_start:]
-        # Remove all separator lines
-        table_lines = [line for line in table_lines if not re.match(r'^\|\s*(-+\s*\|)+\s*$', line.strip())]
+            # parse table lines
+            table = Table(table_start, table_end)
+            for line in table_lines:
+                values = [strip_markdown_link(v.strip()) for v in line.strip().strip('|').split('|')]
+                entry = dict(zip(template.columns, values))
+                row = Row(table, entry)
+                table.rows.append(row)
 
-        # Parse the table
-        headers_line = table_lines[0]
-        headers = [h.strip() for h in headers_line.strip().strip('|').split('|')]
-        entries = []
-        for line in table_lines[2:]:
-            if not line.strip().startswith('|'):
-                break  # End of table
-            values = [v.strip() for v in line.strip().strip('|').split('|')]
-            # Ensure values match headers length
-            if len(values) < len(headers):
-                values += [''] * (len(headers) - len(values))
-            elif len(values) > len(headers):
-                values = values[:len(headers)]
-            entry = dict(zip(headers, values))
+            index.tables[table_title] = table
 
-            # parse entry
-            title_raw = entry.get('Title', '')
-            title = title_raw.split('](')[0][1:]
-            paper_ref_path = title_raw.split('](')[1][:-1]  # e.g., ./papers/gim2023prompt.md
-            concise_authors = entry.get('Authors', '')
-            venue = entry.get('Venue', '')
-            year = int(entry.get('Year', '0'))
-            num_citations = int(entry.get('Citations', '0'))
+        return index
 
-            real_entry = PaperIndexItem(
-                title=title,
-                authors=concise_authors,
-                venue=venue,
-                year=year,
-                num_citations=num_citations,
-                paper_ref_path=paper_ref_path
-            )
+    def update_row(self, table_name: str, idx: int, values: dict[str, str]) -> bool:
 
-            entries.append(real_entry)
+        if table_name not in self.tables:
+            return False
 
-        ...
+        table = self.tables[table_name]
 
-    def update_row(self, table_name: str, idx: int, values: dict[str, str]):
-        ...
+        if idx < 0 or idx >= len(table.rows):
+            return False
 
-    def insert_row(self, table_name: str, values: dict[str, str]):
-        ...
+        table.rows[idx].entry = values
+
+        self._write_table(table_name)
+
+        return True
+
+    def insert_row(self, table_name: str, values: dict[str, str]) -> bool:
+
+        if table_name not in self.tables:
+            return False
+
+        table = self.tables[table_name]
+        row = Row(table, values)
+        table.rows.append(row)
+
+        self._write_table(table_name)
+        return True
+
+    def _write_table(self, table_name: str):
+
+        table = self.tables[table_name]
+
+        headers = [self.template.headers[c] for c in self.template.columns]
+        header_widths = dict(zip(self.template.columns, [len(h) for h in headers]))
+
+        for row in table.rows:
+            for c in self.template.columns:
+                header_widths[c] = max(header_widths[c], len(row.entry[c]))
+
+        lines = [
+            '| ' + ' | '.join([h.ljust(header_widths[h]) for h in headers]) + ' |',
+            '| ' + ' | '.join(['-' * header_widths[h] for h in headers]) + ' |'
+        ]
+
+        for row in table.rows:
+            entry_formatted = [row.entry[c]
+                               .replace('|', '\\|')
+                               .ljust(header_widths[c])
+                               for c in self.template.columns]
+            row = '| ' + ' | '.join(entry_formatted) + ' |'
+            lines.append(row)
+
+        # Read the file into a list of lines
+        with open(self.path, 'r') as file:
+            lines_old = file.readlines()
+
+        # Replace lines from n to m (inclusive)
+        lines_new = lines_old[:table.start_line - 2] + lines + lines_old[table.end_line + 1:]
+        end_line_new = table.start_line + (len(lines) - 2) - 1
+
+        delta = end_line_new - table.end_line
+
+        # Write the updated lines back to the file
+        with open(self.path, 'w') as file:
+            file.writelines(lines_new)
+
+        table.end_line = end_line_new
+
+        # Update the start and end lines of all tables after the current table
+        for table_name in self.tables:
+            if self.tables[table_name].start_line > table.start_line:
+                self.tables[table_name].start_line += delta
+                self.tables[table_name].end_line += delta
 
 
 class Table:
-    parent: Index
     rows: list[Row]
+    start_line: int
+    end_line: int
 
-    def __init__(self):
+    def __init__(self, start_line: int, end_line: int):
         self.rows = []
+        self.start_line = start_line
+        self.end_line = end_line
 
 
 class Row:
     parent: Table
-    values: dict[str, str]
+    entry: dict[str, str]
 
-    def __init__(self):
-        ...
+    def __init__(self, parent: Table, entry: dict[str, str]):
+        self.parent = parent
+        self.entry = entry
