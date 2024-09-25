@@ -10,10 +10,9 @@ import feedparser
 from scholarly import scholarly
 import openai
 
-from bibim.page import Page
-from bibim.search import search_paper
-from .index import Index, IndexTemplate, PageTemplate
-from .paper import Paper, Author, PaperMarkdown, IndexMarkdown
+from .search import search_reference
+from .index import Index, IndexTemplate
+from .page import Page, PageTemplate
 
 BIBIM_DIR = ".bibim"
 CONFIG_FILE = f"{BIBIM_DIR}/settings.json"
@@ -46,18 +45,46 @@ class Config:
                 },
                 "reference": {
                     "path": "references",
-                    "entries": {
-                        "title": ["# ", "\n"],
-                        "authors": ["**Authors**: ", "\n"],
-                        "venue": ["**Venue**: ", "\n"],
-                        "year": ["**Year**: ", "\n"],
-                        "abstract": ["**Abstract**: ", "\n"],
-                        "url": ["**URL**: ", "\n"],
-                        "doi": ["**DOI**: ", "\n"],
-                        "arxiv_id": ["**arXiv**: ", "\n"],
-                        "num_citations": ["**Citations**: ", "\n"]
+                    "article": {
+                        "fields": {
+                            "author": ["**Author**: ", "\n"],
+                            "title": ["# ", "\n"],
+                            "year": ["**Year**: ", "\n"],
+                            "url": ["**URL**: ", "\n"],
+                            "journal": ["**Journal**: ", "\n"],
+                            "volume": ["**Volume**: ", "\n"],
+                            "doi": ["**DOI**: ", "\n"],
+                            "arxiv": ["**arXiv**: ", "\n"],
+                            "abstract": ["**Abstract**: ", "\n"],
+                            "num_citations": ["**Citations**: ", "\n"]
+                        },
+                        "layout": "{title}{author}{journal}{volume}{year}{url}{arxiv}{doi}{num_citations}"
                     },
-                    "layout": "{title}{authors}{venue}{year}{url}{arxiv_id}{doi}{num_citations}"
+                    "proceedings": {
+                        "fields": {
+                            "author": ["**Author**: ", "\n"],
+                            "title": ["# ", "\n"],
+                            "year": ["**Year**: ", "\n"],
+                            "url": ["**URL**: ", "\n"],
+                            "booktitle": ["**Venue**: ", "\n"],
+                            "publisher": ["**Publisher**: ", "\n"],
+                            "doi": ["**DOI**: ", "\n"],
+                            "arxiv": ["**arXiv**: ", "\n"],
+                            "abstract": ["**Abstract**: ", "\n"],
+                            "num_citations": ["**Citations**: ", "\n"]
+                        },
+                        "layout": "{title}{author}{booktitle}{year}{url}{arxiv}{doi}{num_citations}"
+                    },
+                    "misc": {
+                        "fields": {
+                            "author": ["**Author**: ", "\n"],
+                            "title": ["# ", "\n"],
+                            "year": ["**Year**: ", "\n"],
+                            "url": ["**URL**: ", "\n"],
+                            "note": ["**Note**: ", "\n"]
+                        },
+                        "layout": "{title}{author}{year}{url}{note}"
+                    },
                 },
             }
             json.dump(settings, f, indent=4)
@@ -108,7 +135,7 @@ def add_reference(title: str, table_name: str | None = None):
 
     index = Index.load(cfg.index_path, cfg.index_template)
 
-    paper = search_paper(title, ask_user=True)
+    paper = search_reference(title, ask_user=True)
     if not paper:
         return
 
@@ -151,7 +178,7 @@ def update_references():
 
         for i, row in enumerate(table.rows):
             query = f"{row.entry['title']} {row.entry['authors_concise'].split()[-1]}"
-            paper = search_paper(query, ask_user=False)
+            paper = search_reference(query, ask_user=False)
 
             if not paper:
                 print(f"No metadata found for '{row.entry['title']}'. Skipping.")
@@ -180,11 +207,9 @@ def generate_bibtex(filename):
     for table_name, table in index.tables.items():
 
         for row in table.rows:
-
             page = Page.load(row.entry['reference'], cfg.reference_template)
             paper_id = row.entry['reference'].split('/')[-1].split('.')[0]
             paper = Paper.from_page_entry(page.data)
-
 
         ...
 

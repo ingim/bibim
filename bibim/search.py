@@ -1,192 +1,245 @@
 import re
+from dataclasses import dataclass
 
 import requests
 import feedparser
 from scholarly import scholarly
 
-def search_paper(title: str, ask_user: bool = False) -> Paper | None:
+from .reference import Article, Proceedings
+
+
+def first_author_last_name(author: str) -> str:
+    return author.split(',')[0].split()[-1].strip()
+
+
+def search_reference(title: str, ask_user: bool = False) -> Article | Proceedings | None:
     # Step 1. Search on Google Scholar
     print(f"Searching on Google Scholar...")
-    papers = search_google_scholar(title)
-    if not papers:
+    results = search_google_scholar(title)
+    if not results:
         print(f"No results found on Google Scholar.")
         return
-    elif len(papers) == 1:
-        google_paper = papers[0]
+    elif len(results) == 1:
+        google_metadata = results[0]
     elif ask_user:
         # Prompt the user to choose one
         print(f"Multiple papers found on Google Scholar:")
-        for idx, paper in enumerate(papers):
-            paper_authors_str = paper.author[0].full_name + (' et al.' if len(paper.author) > 1 else '')
-            print(f"    {idx + 1}. {paper.title} by {paper_authors_str}")
+        for idx, result in enumerate(results):
+            print(f"    {idx + 1}. {result.title} by {first_author_last_name(result.author_concise)} et al.")
         try:
-            choice = int(input(f"Please select the correct paper (1-{len(papers)}) or 0 to cancel: "))
+            choice = int(input(f"Please select the correct paper (1-{len(results)}) or 0 to cancel: "))
             if choice == 0:
                 return
-            elif 1 <= choice <= len(papers):
-                google_paper = papers[choice - 1]
+            elif 1 <= choice <= len(results):
+                google_metadata = results[choice - 1]
             else:
                 return
         except ValueError:
             return
     else:
-        google_paper = papers[0]
+        google_metadata = results[0]
 
     # Step 3. Search on DBLP using the title and authors
     print(f"Searching on DBLP...")
-    dblp_paper = search_dblp(google_paper.title, google_paper.author)
+    dblp_results = search_dblp(google_metadata.title + ' ' + first_author_last_name(google_metadata.author_concise))
 
-    if not dblp_paper:
+    if len(dblp_results) < 1:
         print(f"No results found on DBLP.")
         return
 
     # Step 4. Search on arXiv using the title and authors
     print(f"Searching on arXiv...")
-    arxiv_paper = search_arxiv(google_paper.title, google_paper.author)
+    arxiv_results = search_arxiv(google_metadata.title + ' ' + first_author_last_name(google_metadata.author_concise))
 
     # Step 5. Consolidate the metadata
     paper = Paper(
-        title=dblp_paper.title,
-        authors=dblp_paper.author,
-        year=dblp_paper.year,
-        venue=dblp_paper.venue,
-        url=dblp_paper.url,
+        title=dblp_results.title,
+        authors=dblp_results.author,
+        year=dblp_results.year,
+        venue=dblp_results.venue,
+        url=dblp_results.url,
         arxiv_id=arxiv_paper.arxiv_id if arxiv_paper else None,
-        abstract=google_paper.abstract,
-        num_citations=google_paper.num_citations
+        abstract=google_metadata.abstract,
+        num_citations=google_metadata.num_citations
     )
 
     return paper
 
 
-def search_arxiv(title: str, authors: list[Author] | None = None) -> Paper | None:
+@dataclass
+class ArXivResult:
+    author: str
+    title: str
+    arxiv_id: str
+    summary: str
+
+
+def search_arxiv(query: str) -> list[ArXivResult]:
     """Searches arXiv for the paper title and authors' last names, returns the arXiv URL if found."""
-    query = f"ti:\"{title}\""
-    if authors:
-        # Include the first authors' last name to improve search accuracy
-        query += '+AND+au:\"' + authors[0].last_name + '\"'
-    # Construct the search query
-    url = f"https://export.arxiv.org/api/query?search_query={requests.utils.quote(query)}&max_results=1"
+    query = f"ti:\"{query}\""
+    url = f"https://export.arxiv.org/api/query?search_query={requests.utils.quote(query)}&max_results=3"
     response = requests.get(url)
     if response.status_code != 200:
         print("Error accessing arXiv API.")
-        return
+        return []
     feed = feedparser.parse(response.content)
-    if feed.entries:
-        entry = feed.entries[0]
+
+    # Example of a search result:
+    # {'id': 'http://arxiv.org/abs/2311.04934v2', 'guidislink': True, 'link': 'http://arxiv.org/abs/2311.04934v2',
+    #  'updated': '2024-04-25T15:45:19Z',
+    #  'updated_parsed': time.struct_time(tm_year=2024, tm_mon=4, tm_mday=25, tm_hour=15, tm_min=45, tm_sec=19, tm_wday=3,
+    #                                     tm_yday=116, tm_isdst=0), 'published': '2023-11-07T18:17:05Z',
+    #  'published_parsed': time.struct_time(tm_year=2023, tm_mon=11, tm_mday=7, tm_hour=18, tm_min=17, tm_sec=5, tm_wday=1,
+    #                                       tm_yday=311, tm_isdst=0),
+    #  'title': 'Prompt Cache: Modular Attention Reuse for Low-Latency Inference',
+    #  'title_detail': {'type': 'text/plain', 'language': None, 'base': '',
+    #                   'value': 'Prompt Cache: Modular Attention Reuse for Low-Latency Inference'},
+    #  'summary': 'We present Prompt Cache, an approach for accelerating inference for large\nlanguage models (LLM) by reusing attention states across different LLM prompts.\nMany input prompts have overlapping text segments, such as system messages,\nprompt templates, and documents provided for context. Our key insight is that\nby precomputing and storing the attention states of these frequently occurring\ntext segments on the inference server, we can efficiently reuse them when these\nsegments appear in user prompts. Prompt Cache employs a schema to explicitly\ndefine such reusable text segments, called prompt modules. The schema ensures\npositional accuracy during attention state reuse and provides users with an\ninterface to access cached states in their prompt. Using a prototype\nimplementation, we evaluate Prompt Cache across several LLMs. We show that\nPrompt Cache significantly reduce latency in time-to-first-token, especially\nfor longer prompts such as document-based question answering and\nrecommendations. The improvements range from 8x for GPU-based inference to 60x\nfor CPU-based inference, all while maintaining output accuracy and without the\nneed for model parameter modifications.',
+    #  'summary_detail': {'type': 'text/plain', 'language': None, 'base': '',
+    #                     'value': 'We present Prompt Cache, an approach for accelerating inference for large\nlanguage models (LLM) by reusing attention states across different LLM prompts.\nMany input prompts have overlapping text segments, such as system messages,\nprompt templates, and documents provided for context. Our key insight is that\nby precomputing and storing the attention states of these frequently occurring\ntext segments on the inference server, we can efficiently reuse them when these\nsegments appear in user prompts. Prompt Cache employs a schema to explicitly\ndefine such reusable text segments, called prompt modules. The schema ensures\npositional accuracy during attention state reuse and provides users with an\ninterface to access cached states in their prompt. Using a prototype\nimplementation, we evaluate Prompt Cache across several LLMs. We show that\nPrompt Cache significantly reduce latency in time-to-first-token, especially\nfor longer prompts such as document-based question answering and\nrecommendations. The improvements range from 8x for GPU-based inference to 60x\nfor CPU-based inference, all while maintaining output accuracy and without the\nneed for model parameter modifications.'},
+    #  'authors': [{'name': 'In Gim'}, {'name': 'Guojun Chen'}, {'name': 'Seung-seob Lee'}, {'name': 'Nikhil Sarda'},
+    #              {'name': 'Anurag Khandelwal'}, {'name': 'Lin Zhong'}], 'author_detail': {'name': 'Lin Zhong'},
+    #  'author': 'Lin Zhong', 'arxiv_comment': 'To appear at MLSys 2024',
+    #  'links': [{'href': 'http://arxiv.org/abs/2311.04934v2', 'rel': 'alternate', 'type': 'text/html'},
+    #            {'title': 'pdf', 'href': 'http://arxiv.org/pdf/2311.04934v2', 'rel': 'related', 'type': 'application/pdf'}],
+    #  'arxiv_primary_category': {'term': 'cs.CL', 'scheme': 'http://arxiv.org/schemas/atom'},
+    #  'tags': [{'term': 'cs.CL', 'scheme': 'http://arxiv.org/schemas/atom', 'label': None},
+    #           {'term': 'cs.AI', 'scheme': 'http://arxiv.org/schemas/atom', 'label': None}]}
+
+    results = []
+    for entry in feed.entries:
         arxiv_id = entry.get('id', '')
 
         # Ensure that the title matches
-        arxiv_title = re.sub(r"\s+", " ", entry.get('title', '')).strip()
-        if title.lower() != arxiv_title.lower():
-            return
+        title = entry.get('title', '')
 
-        return Paper(
-            title=arxiv_title,
-            authors=authors,
+        author = ', '.join([a.name for a in entry.get('authors', [])])
+        summary = entry.get('summary', '')
+
+        results.append(ArXivResult(
+            author=author,
+            title=title,
             arxiv_id=arxiv_id,
-        )
-    else:
-        return
+            summary=summary
+        ))
+    return results
 
 
-def search_google_scholar(title: str, max_results: int = 3) -> list[Paper]:
+@dataclass
+class GoogleScholarResult:
+    author_concise: str
+    title: str
+    num_citations: int
+    pub_url: str
+
+
+def search_google_scholar(query: str, max_results: int = 3) -> list[GoogleScholarResult]:
     """Searches for the paper title on Google Scholar and returns matching papers."""
-    search_query = scholarly.search_pubs(title)
-    papers = []
+    search_query = scholarly.search_pubs(query)
+    results = []
+
+    # Example of a search result:
+    # {
+    #     'container_type': 'Publication',
+    #     'bib': {
+    #         'title': 'Fastformer: Additive attention can be all you need',
+    #         'author': ['C Wu', 'F Wu', 'T Qi', 'Y Huang', 'X Xie'],
+    #         'pub_year': '2021', 'venue': 'arXiv preprint arXiv:2108.09084',
+    #         'abstract': 'attention. In Fastformer, instead of modeling the pair-wise intractions between tokens, we first  use additive attention mecha • We propose an additive attention based Transformer named'
+    #     },
+    #     'filled': False,
+    #     'gsrank': 4,
+    #     'pub_url': 'https://arxiv.org/abs/2108.09084',
+    #     'author_id': [
+    #         'OG1cMswAAAAJ', '0SZVO0sAAAAJ', 'iRr7c9wAAAAJ', '', '5EQfAFIAAAAJ'],
+    #     'url_scholarbib': '/scholar?hl=en&q=info:9_kFeQ_sO-wJ:scholar.google.com/&output=cite&scirp=3&hl=en',
+    #     'url_add_sclib': '/citations?hl=en&xsrf=&continue=/scholar%3Fq%3Dattention%2Bis%2Ball%2Byou%2Bneed%26hl%3Den%26as_sdt%3D0,33&citilm=1&update_op=library_add&info=9_kFeQ_sO-wJ&ei=jlj0ZqXHLsye6rQPjviW2A4&json=',
+    #     'num_citations': 145,
+    #     'citedby_url': '/scholar?cites=17022458767776020983&as_sdt=5,33&sciodt=0,33&hl=en',
+    #     'url_related_articles': '/scholar?q=related:9_kFeQ_sO-wJ:scholar.google.com/&scioq=attention+is+all+you+need&hl=en&as_sdt=0,33',
+    #     'eprint_url': 'https://arxiv.org/pdf/2108.09084'
+    # }
+
     try:
         for _ in range(max_results):
             paper = next(search_query)
 
-            paper_title = paper['bib'].get('title', '').strip()
-            paper_authors_data = paper['bib'].get('author', '').strip()
-            if isinstance(paper_authors_data, str):
-                paper_authors = [Author(author) for author in re.split(' and ', paper_authors_data)]
-            elif isinstance(paper_authors_data, list):
-                paper_authors = [Author(author) for author in paper_authors_data]
-            else:
-                paper_authors = []
-
-            paper_num_citations = paper.get('num_citations', 0)
-            paper_abstract = paper['bib'].get('abstract', '')
-            paper_url = paper.get('pub_url', '')
-
-            paper = Paper(
-                title=paper_title,
-                authors=paper_authors,
-                url=paper_url,
-                abstract=paper_abstract,
-                num_citations=paper_num_citations
-            )
-
-            papers.append(paper)
+            results.append(GoogleScholarResult(
+                author_concise=', '.join(paper['bib'].get('author', '').strip()),
+                title=paper['bib'].get('title', '').strip(),
+                num_citations=paper.get('num_citations', 0),
+                pub_url=paper.get('pub_url', '')
+            ))
     except StopIteration:
         pass
 
-    return papers
+    return results
 
 
-def search_dblp(title: str, authors: list[Author] | None = None) -> Paper | None:
+@dataclass
+class DBLPResult:
+    author: str
+    title: str
+    venue: str
+    year: str
+    doi: str
+    is_conference: bool
+
+
+def search_dblp(query: str) -> list[DBLPResult]:
     """Searches for the paper on DBLP using title and authors."""
-    query = title
-    if authors:
-        # Include authors' last names in the query to improve accuracy
-        authors_last_name = [author.last_name for author in authors]
-        query += ' ' + ' '.join(authors_last_name)
 
     url = f'https://dblp.org/search/publ/api?q={requests.utils.quote(query)}&format=json'
     response = requests.get(url)
     data = response.json()
     hits = data.get('result', {}).get('hits', {}).get('hit', [])
 
-    def parse_entry(entry: dict) -> Paper:
+    if not hits:
+        return []
 
-        info = entry.get('info', {})
-        paper_title_raw = info.get('title')
-        paper_authors_raw = info.get('authors', {}).get('author', [])
+    results = []
 
-        # parse title
-        paper_title = re.sub(r'\s+', ' ', paper_title_raw).strip()
+    # Attempt to find an exact match
+    for entry in hits:
 
-        if paper_title.endswith('.'):
-            paper_title = paper_title[:-1]
+        # Example of a search result:
+        # {
+        #     '@score': '8',
+        #     '@id': '323951',
+        #     'info':
+        #         {
+        #             'authors': {
+        #                 'author': [
+        #                     {'@pid': '375/1509', 'text': 'Georgy Tyukin'},
+        #                     {'@pid': '342/2924', 'text': 'Gbètondji J.-S. Dovonon'},
+        #                     {'@pid': '232/9592', 'text': 'Jean Kaddour'},
+        #                     {'@pid': '58/10142', 'text': 'Pasquale Minervini'}]},
+        #             'title': 'Attention Is All You Need But You Don&apos;t Need All Of It For Inference of Large Language Models.',
+        #             'venue': 'CoRR', 'volume': 'abs/2407.15516', 'year': '2024',
+        #             'type': 'Informal and Other Publications', 'access': 'open',
+        #             'key': 'journals/corr/abs-2407-15516', 'doi': '10.48550/ARXIV.2407.15516',
+        #             'ee': 'https://doi.org/10.48550/arXiv.2407.15516',
+        #             'url': 'https://dblp.org/rec/journals/corr/abs-2407-15516'},
+        #     'url': 'URL#323951'
+        # }
 
-        # parse authors
-        if not isinstance(paper_authors_raw, list):
-            paper_authors_raw = [paper_authors_raw]
+        author_list = entry["info"]["authors"]["author"]
+        if isinstance(author_list, dict):
+            author_list = [author_list]
 
-        paper_authors = []
-        for author in paper_authors_raw:
-            author_name = author.get('text', '') if isinstance(author, dict) else author
-            author_name_clean = re.sub(r'\s+\d{4}$', '', author_name)
-            paper_authors.append(Author(author_name_clean))
+        author = ','.join([author["text"] for author in author_list])
 
-        # parse venue
-        paper_venue = info.get('venue')
+        title = entry["info"]["title"].strip()
+        if title[-1] == '.':
+            title = title[:-1]
 
-        # parse year
-        paper_year = int(info.get('year'))
+        results.append(DBLPResult(
+            author=author,
+            title=title,
+            venue=entry["info"]["venue"],
+            year=entry["info"]["year"],
+            doi=entry["info"]["doi"],
+            is_conference=entry["info"]["type"] == "Conference and Workshop Papers"
+        ))
 
-        # parse URL
-        paper_url = info.get('ee')
-
-        return Paper(
-            title=paper_title,
-            authors=paper_authors,
-            venue=paper_venue,
-            year=paper_year,
-            url=paper_url
-        )
-
-    if hits:
-        # Attempt to find an exact match
-        for entry in hits:
-            paper = parse_entry(entry)
-            if paper.title.lower() == title.lower():
-                if authors and len(authors) > 1:
-                    if paper.author[0].last_name.lower() != authors[0].last_name.lower():
-                        continue
-                return paper
-
-    print(f"No results found for '{title}' on DBLP.")
-    return None
+    return results
