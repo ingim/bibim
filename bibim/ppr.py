@@ -3,6 +3,9 @@ import re
 import requests
 
 
+
+
+
 class Author:
     full_name: str
     last_name: str
@@ -79,7 +82,7 @@ class Paper:
         if self.title.lower() != other.title.lower():
             return False
 
-        for a1, a2 in zip(self.authors, other.authors):
+        for a1, a2 in zip(self.authors, other.author):
             if a1.last_name.lower() != a2.last_name.lower():
                 return False
 

@@ -19,7 +19,7 @@ def strip_markdown_link(text: str) -> str:
     return text
 
 
-class Template:
+class IndexTemplate:
     headers: dict[str, str]
     columns: list[str]
     separator: (str, str)
@@ -33,15 +33,32 @@ class Template:
 class Index:
     path: str
     tables: dict[str, Table]
-    template: Template
+    template: IndexTemplate
 
-    def __init__(self, path: str, template: Template):
+    def __init__(self, path: str, template: IndexTemplate):
         self.path = path
         self.template = template
         self.tables = {}
 
     @staticmethod
-    def load(path: str, template: Template) -> Index:
+    def create(path: str, template: IndexTemplate) -> Index:
+
+        headers = [template.headers[c] for c in template.columns]
+        header_widths = dict(zip(template.columns, [len(h) for h in headers]))
+
+        lines = [
+            template.separator[0] + 'Index' + template.separator[1],
+            '| ' + ' | '.join(headers) + ' |',
+            '| ' + ' | '.join(['-' * header_widths[h] for h in headers]) + ' |'
+        ]
+
+        with open(path, 'w') as f:
+            f.writelines(lines)
+
+        return Index.load(path, template)
+
+    @staticmethod
+    def load(path: str, template: IndexTemplate) -> Index:
 
         index = Index(path, template)
 
@@ -95,12 +112,14 @@ class Index:
 
         return index
 
-    def update_row(self, table_name: str, idx: int, values: dict[str, str]) -> bool:
+    def update_row(self, idx: int, values: dict[str, str], table_name: str | None = None) -> bool:
 
-        if table_name not in self.tables:
-            return False
-
-        table = self.tables[table_name]
+        if table_name:
+            if table_name not in self.tables:
+                return False
+            table = self.tables[table_name]
+        else:
+            table = self.tables[list(self.tables.keys())[0]]
 
         if idx < 0 or idx >= len(table.rows):
             return False
@@ -111,12 +130,15 @@ class Index:
 
         return True
 
-    def insert_row(self, table_name: str, values: dict[str, str]) -> bool:
+    def insert_row(self, values: dict[str, str], table_name: str | None = None) -> bool:
 
-        if table_name not in self.tables:
-            return False
+        if table_name:
+            if table_name not in self.tables:
+                return False
+            table = self.tables[table_name]
+        else:
+            table = self.tables[list(self.tables.keys())[0]]
 
-        table = self.tables[table_name]
         row = Row(table, values)
         table.rows.append(row)
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import os
 import json
@@ -8,320 +10,132 @@ import feedparser
 from scholarly import scholarly
 import openai
 
+from bibim.page import Page
+from bibim.search import search_paper
+from .index import Index, IndexTemplate, PageTemplate
 from .paper import Paper, Author, PaperMarkdown, IndexMarkdown
 
-SETTINGS_FILE = ".bibim/settings.json"
+BIBIM_DIR = ".bibim"
+CONFIG_FILE = f"{BIBIM_DIR}/settings.json"
+
+
+class Config:
+    path: str
+    entries: dict
+
+    def __init__(self, path: str, entries: dict):
+        self.path = path
+        self.entries = entries
+
+    @staticmethod
+    def create(path: str = CONFIG_FILE) -> Config:
+        with open(path, 'w') as f:
+            settings = {
+                "index": {
+                    "path": "index.md",
+                    "separator": ["# ", "\n"],
+                    "headers": {
+                        "title": "Title",
+                        "authors_concise": "Authors",
+                        "venue": "Venus",
+                        "year": "Year",
+                        "num_citations": "Citations",
+                        "reference": "Reference"
+                    },
+                    "columns": ["title", "authors_concise", "venue", "year", "num_citations", "reference"]
+                },
+                "reference": {
+                    "path": "references",
+                    "entries": {
+                        "title": ["# ", "\n"],
+                        "authors": ["**Authors**: ", "\n"],
+                        "venue": ["**Venue**: ", "\n"],
+                        "year": ["**Year**: ", "\n"],
+                        "abstract": ["**Abstract**: ", "\n"],
+                        "url": ["**URL**: ", "\n"],
+                        "doi": ["**DOI**: ", "\n"],
+                        "arxiv_id": ["**arXiv**: ", "\n"],
+                        "num_citations": ["**Citations**: ", "\n"]
+                    },
+                    "layout": "{title}{authors}{venue}{year}{url}{arxiv_id}{doi}{num_citations}"
+                },
+            }
+            json.dump(settings, f, indent=4)
+
+        return Config(path, settings)
+
+    @staticmethod
+    def load(path: str = CONFIG_FILE) -> Config:
+        """Loads settings from the settings.json file."""
+        if not os.path.exists(path):
+            print(f"Error: {path} not found. Please run 'bibim init' to initialize.")
+            exit(1)
+
+        with open(path, 'r') as f:
+            return Config(path, json.load(f))
+
+    @property
+    def index_path(self) -> str:
+        return self.entries['index']['path']
+
+    @property
+    def index_template(self) -> IndexTemplate:
+        return IndexTemplate(self.entries['index']['headers'], self.entries['index']['columns'], self.entries['index']['separator'])
+
+    @property
+    def reference_path(self) -> str:
+        return self.entries['reference']['path']
+
+    @property
+    def reference_template(self) -> PageTemplate:
+        return PageTemplate(self.entries['reference']['entries'], self.entries['reference']['layout'])
 
 
 # Initialize bibim repository
-def init_repository():
+def initialize_repository():
     """Initializes a bibim repository by creating index.md and settings.json."""
-    os.makedirs(".bibim", exist_ok=True)
-    with open(SETTINGS_FILE, 'w') as f:
-        settings = {
-            "index": "index.md",
-            "references": "./references",
-            "paper_template": {
-                "entries": {
-                    "title": ["# ", "\n"],
-                    "authors": ["**Authors**: ", "\n"],
-                    "venue": ["**Venue**: ", "\n"],
-                    "year": ["**Year**: ", "\n"],
-                    "abstract": ["**Abstract**: ", "\n"],
-                    "links": ["**Links**: ", "\n"],
-                },
-                "layout": "{title}{authors}{venue}{year}{abstract}{links}"
-            },
-            "index_template": {
-                "separator": ["# ", "\n"],
-                "headers": {
-                    "title": "Title",
-                    "concise_authors": "Authors",
-                    "venue": "Venus",
-                    "year": "Year",
-                    "citations": "Citations",
-                    "reference": "Reference"
-                },
-                "columns": ["title", "concise_authors", "venue", "year", "citations", "reference"]
-            }
-
-        }
-        json.dump(settings, f, indent=4)
-
-    # Create index.md file
-    IndexMarkdown.create_empty('index.md')
-
-    os.makedirs("./references", exist_ok=True)
-
+    os.makedirs(BIBIM_DIR, exist_ok=True)
+    cfg = Config.create(CONFIG_FILE)
+    Index.create(cfg.index_path, cfg.index_template)
+    os.makedirs(cfg.reference_path, exist_ok=True)
     print("Initialized bibim repository.")
 
 
-# Read the settings file
-def load_settings():
-    """Loads settings from the settings.json file."""
-    if not os.path.exists(SETTINGS_FILE):
-        print(f"Error: {SETTINGS_FILE} not found. Please run 'bibim init' to initialize.")
-        exit(1)
-
-    with open(SETTINGS_FILE, 'r') as f:
-        return json.load(f)
-
-
-def search_arxiv(title: str, authors: list[Author] | None = None) -> Paper | None:
-    """Searches arXiv for the paper title and authors' last names, returns the arXiv URL if found."""
-    query = f"ti:\"{title}\""
-    if authors:
-        # Include the first authors' last name to improve search accuracy
-        query += '+AND+au:\"' + authors[0].last_name + '\"'
-    # Construct the search query
-    url = f"https://export.arxiv.org/api/query?search_query={requests.utils.quote(query)}&max_results=1"
-    response = requests.get(url)
-    if response.status_code != 200:
-        print("Error accessing arXiv API.")
-        return
-    feed = feedparser.parse(response.content)
-    if feed.entries:
-        entry = feed.entries[0]
-        arxiv_id = entry.get('id', '')
-
-        # Ensure that the title matches
-        arxiv_title = re.sub(r"\s+", " ", entry.get('title', '')).strip()
-        if title.lower() != arxiv_title.lower():
-            return
-
-        return Paper(
-            title=arxiv_title,
-            authors=authors,
-            arxiv_id=arxiv_id,
-        )
-    else:
-        return
-
-
-def search_google_scholar(title: str, max_results: int = 3) -> list[Paper]:
-    """Searches for the paper title on Google Scholar and returns matching papers."""
-    search_query = scholarly.search_pubs(title)
-    papers = []
-    try:
-        for _ in range(max_results):
-            paper = next(search_query)
-
-            paper_title = paper['bib'].get('title', '').strip()
-            paper_authors_data = paper['bib'].get('author', '').strip()
-            if isinstance(paper_authors_data, str):
-                paper_authors = [Author(author) for author in re.split(' and ', paper_authors_data)]
-            elif isinstance(paper_authors_data, list):
-                paper_authors = [Author(author) for author in paper_authors_data]
-            else:
-                paper_authors = []
-
-            paper_num_citations = paper.get('num_citations', 0)
-            paper_abstract = paper['bib'].get('abstract', '')
-            paper_url = paper.get('pub_url', '')
-
-            paper = Paper(
-                title=paper_title,
-                authors=paper_authors,
-                url=paper_url,
-                abstract=paper_abstract,
-                num_citations=paper_num_citations
-            )
-
-            papers.append(paper)
-    except StopIteration:
-        pass
-
-    return papers
-
-
-def search_dblp(title: str, authors: list[Author] | None = None) -> Paper | None:
-    """Searches for the paper on DBLP using title and authors."""
-    query = title
-    if authors:
-        # Include authors' last names in the query to improve accuracy
-        authors_last_name = [author.last_name for author in authors]
-        query += ' ' + ' '.join(authors_last_name)
-
-    url = f'https://dblp.org/search/publ/api?q={requests.utils.quote(query)}&format=json'
-    response = requests.get(url)
-    data = response.json()
-    hits = data.get('result', {}).get('hits', {}).get('hit', [])
-
-    def parse_entry(entry: dict) -> Paper:
-
-        info = entry.get('info', {})
-        paper_title_raw = info.get('title')
-        paper_authors_raw = info.get('authors', {}).get('author', [])
-
-        # parse title
-        paper_title = re.sub(r'\s+', ' ', paper_title_raw).strip()
-
-        if paper_title.endswith('.'):
-            paper_title = paper_title[:-1]
-
-        # parse authors
-        if not isinstance(paper_authors_raw, list):
-            paper_authors_raw = [paper_authors_raw]
-
-        paper_authors = []
-        for author in paper_authors_raw:
-            author_name = author.get('text', '') if isinstance(author, dict) else author
-            author_name_clean = re.sub(r'\s+\d{4}$', '', author_name)
-            paper_authors.append(Author(author_name_clean))
-
-        # parse venue
-        paper_venue = info.get('venue')
-
-        # parse year
-        paper_year = int(info.get('year'))
-
-        # parse URL
-        paper_url = info.get('ee')
-
-        return Paper(
-            title=paper_title,
-            authors=paper_authors,
-            venue=paper_venue,
-            year=paper_year,
-            url=paper_url
-        )
-
-    if hits:
-        # Attempt to find an exact match
-        for entry in hits:
-            paper = parse_entry(entry)
-            if paper.title.lower() == title.lower():
-                if authors and len(authors) > 1:
-                    if paper.authors[0].last_name.lower() != authors[0].last_name.lower():
-                        continue
-                return paper
-
-    print(f"No results found for '{title}' on DBLP.")
-    return None
-
-
-def generate_summary(abstract):
-    """Generates a concise summary using OpenAI API."""
-    if openai is None:
-        print("OpenAI API is not available.")
-        return "Summary not available."
-    try:
-        openai.api_key = os.getenv('OPENAI_API_KEY')
-        if not openai.api_key:
-            print("OpenAI API key is not set in the environment variables.")
-            return "Summary not available."
-
-        client = openai.OpenAI()
-
-        stream = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user",
-                       "content": f"Summarize the following paper abstract in a clear and concise manner, highlighting the core ideas, key findings, and major results. Ensure the summary captures the problem the research addresses, the methods used, and the most important outcomes or conclusions drawn from the study.:\n\n{abstract}"}],
-            stream=True,
-        )
-
-        summary = ""
-        for chunk in stream:
-            if chunk.choices[0].delta.content is not None:
-                summary += chunk.choices[0].delta.content
-        return summary.strip()
-    except Exception as e:
-        print(f"Error generating summary: {e}")
-        return "Summary not available."
-
-
-def find_paper(title: str, ask_user: bool = False) -> Paper | None:
-    # Step 1. Search on Google Scholar
-    print(f"Searching on Google Scholar...")
-    papers = search_google_scholar(title)
-    if not papers:
-        print(f"No results found on Google Scholar.")
-        return
-    elif len(papers) == 1:
-        google_paper = papers[0]
-    elif ask_user:
-        # Prompt the user to choose one
-        print(f"Multiple papers found on Google Scholar:")
-        for idx, paper in enumerate(papers):
-            paper_authors_str = paper.authors[0].full_name + (' et al.' if len(paper.authors) > 1 else '')
-            print(f"    {idx + 1}. {paper.title} by {paper_authors_str}")
-        try:
-            choice = int(input(f"Please select the correct paper (1-{len(papers)}) or 0 to cancel: "))
-            if choice == 0:
-                return
-            elif 1 <= choice <= len(papers):
-                google_paper = papers[choice - 1]
-            else:
-                return
-        except ValueError:
-            return
-    else:
-        google_paper = papers[0]
-
-    # Step 3. Search on DBLP using the title and authors
-    print(f"Searching on DBLP...")
-    dblp_paper = search_dblp(google_paper.title, google_paper.authors)
-
-    if not dblp_paper:
-        print(f"No results found on DBLP.")
-        return
-
-    # Step 4. Search on arXiv using the title and authors
-    print(f"Searching on arXiv...")
-    arxiv_paper = search_arxiv(google_paper.title, google_paper.authors)
-
-    # Step 5. Consolidate the metadata
-    paper = Paper(
-        title=dblp_paper.title,
-        authors=dblp_paper.authors,
-        year=dblp_paper.year,
-        venue=dblp_paper.venue,
-        url=dblp_paper.url,
-        arxiv_id=arxiv_paper.arxiv_id if arxiv_paper else None,
-        abstract=google_paper.abstract,
-        num_citations=google_paper.num_citations
-    )
-
-    return paper
-
-
-def add_reference(title):
+def add_reference(title: str, table_name: str | None = None):
     """Adds a reference to the bibliography markdown file."""
 
-    settings = load_settings()
-    index_file = settings.get("index", "index.md")
-    references_dir = settings.get("references", "./references")
+    cfg = Config.load(CONFIG_FILE)
 
-    index_md = IndexMarkdown.open(index_file)
-    paper = find_paper(title, ask_user=True)
+    index = Index.load(cfg.index_path, cfg.index_template)
 
+    paper = search_paper(title, ask_user=True)
     if not paper:
         return
 
-    # get paper id
-    paper_id = paper.get_id()  # e.g., gim2023prompt
-    paper_ref_path = os.path.join(references_dir, paper_id + ".md")
+    # e.g., gim2023prompt
+    paper_id = f"{paper.author[0].last_name.lower()}{paper.year}{paper.title.split()[0].lower()}"
+    paper_ref_path = os.path.join(cfg.reference_path, f"{paper_id}.md")
 
+    # increment a, b, c, ... to the filename and see if it exists
     if os.path.exists(paper_ref_path):
-        # increment a, b, c, ... to the filename and see if it exists
-        for i in range(97, 123):
-            paper_ref_path = os.path.join(references_dir, paper_id + f"{chr(i)}.md")
+        for i in range(ord('a'), ord('z') + 1):
+            paper_ref_path = os.path.join(cfg.reference_path, f"{paper_id}{chr(i)}.md")
             if not os.path.exists(paper_ref_path):
                 paper_id += f"{chr(i)}"
                 break
 
-    PaperMarkdown.create(paper, paper_ref_path)
+    index.insert_row(
+        {
+            "title": paper.title,
+            "authors_concise": paper.author_concise,
+            "venue": paper.venue,
+            "year": paper.year,
+            "citations": paper.num_citations,
+            "reference": f"[{paper_ref_path}]({paper_ref_path})"
+        },
+        table_name=table_name)
 
-    # Prepare the reference entry as a dictionary
-    entry = {
-        'Title': f'[{paper.title}]({paper_ref_path})',
-        'Authors': paper.get_concise_authors(),
-        'Venue': paper.venue,
-        'Year': paper.year,
-        'Citations': paper.num_citations,
-    }
-
-    index_md.append(entry)
+    Page.create(paper.to_page_entry(), paper_ref_path, cfg.reference_template)
 
     print(f"Reference '{paper.title}' added as '{paper_id}'.")
 
@@ -329,56 +143,51 @@ def add_reference(title):
 def update_references():
     """Updates the references in the bibliography markdown file."""
 
-    settings = load_settings()
-    index_file = settings.get("index", "index.md")
+    cfg = Config.load(CONFIG_FILE)
 
-    # Read the index file
-    index_md = IndexMarkdown.open(index_file)
+    index = Index.load(cfg.index_path, cfg.index_template)
 
-    new_entries = []
+    for table_name, table in index.tables.items():
 
-    # Update each reference
-    for entry in index_md.entries:
-        title_raw = entry.get('Title', '')
-        title = title_raw.split('](')[0][1:]
-        paper_ref_path = title_raw.split('](')[1][:-1]  # e.g., gim2023prompt
+        for i, row in enumerate(table.rows):
+            query = f"{row.entry['title']} {row.entry['authors_concise'].split()[-1]}"
+            paper = search_paper(query, ask_user=False)
 
-        print(f"Updating '{title}'...")
+            if not paper:
+                print(f"No metadata found for '{row.entry['title']}'. Skipping.")
+                continue
 
-        paper = find_paper(title + " " + entry.get('Authors', '').split()[-1], ask_user=False)
+            paper_ref_path = row.entry['reference']
+            paper_page = Page.load(paper_ref_path, cfg.reference_template)
+            paper_page.data = paper.to_page_entry()
+            paper_page.save()
 
-        if not paper:
-            print(f"No metadata found for '{title}'. Skipping.")
-            new_entries.append(entry)
-            continue
-
-        # read markdown
-        existing_paper_file = PaperMarkdown.from_file(paper_ref_path)
-        existing_paper_file.update(paper)
-
-        # Prepare the reference entry as a dictionary
-        new_entry = {
-            'Title': f'[{paper.title}]({paper_ref_path})',
-            'Authors': paper.get_concise_authors(),
-            'Venue': paper.venue,
-            'Year': paper.year,
-            'Citations': paper.num_citations,
-        }
-
-        # Ensure all headers are present in the entry
-        for h in headers:
-            if h not in new_entry:
-                new_entry[h] = ''
-
-        new_entries.append(new_entry)
-        print(f"Updated '{title}'.")
-
-    # Write back the table
-    write_table(index_file, new_entries, headers)
-    print(f"References have been updated.")
+            index.update_row(i, {
+                "title": paper.title,
+                "authors_concise": paper.author_concise,
+                "venue": paper.venue,
+                "year": paper.year,
+                "citations": paper.num_citations,
+                "reference": f"[{paper_ref_path}]({paper_ref_path})"
+            }, table_name=table_name)
 
 
 def generate_bibtex(filename):
+    cfg = Config.load(CONFIG_FILE)
+
+    index = Index.load(cfg.index_path, cfg.index_template)
+
+    for table_name, table in index.tables.items():
+
+        for row in table.rows:
+
+            page = Page.load(row.entry['reference'], cfg.reference_template)
+            paper_id = row.entry['reference'].split('/')[-1].split('.')[0]
+            paper = Paper.from_page_entry(page.data)
+
+
+        ...
+
     """Generates a bibtex file from the bibliography markdown file."""
     entries, headers = read_table(filename)
     bibtex_entries = ""
@@ -464,7 +273,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == 'init':
-        init_repository()
+        initialize_repository()
     elif args.command == 'add':
         add_reference(args.title, ask_user=True)
     elif args.command == 'update':
