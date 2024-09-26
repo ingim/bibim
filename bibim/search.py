@@ -5,14 +5,15 @@ import requests
 import feedparser
 from scholarly import scholarly
 
-from .reference import Article, Proceedings
+from .reference import Reference
 
 
-def first_author_last_name(author: str) -> str:
+# first author last name
+def faln(author: str) -> str:
     return author.split(',')[0].split()[-1].strip()
 
 
-def search_reference(title: str, ask_user: bool = False) -> Article | Proceedings | None:
+def search_reference(title: str, ask_user: bool = False) -> Reference | None:
     # Step 1. Search on Google Scholar
     print(f"Searching on Google Scholar...")
     results = search_google_scholar(title)
@@ -20,50 +21,65 @@ def search_reference(title: str, ask_user: bool = False) -> Article | Proceeding
         print(f"No results found on Google Scholar.")
         return
     elif len(results) == 1:
-        google_metadata = results[0]
+        google_result = results[0]
     elif ask_user:
         # Prompt the user to choose one
         print(f"Multiple papers found on Google Scholar:")
         for idx, result in enumerate(results):
-            print(f"    {idx + 1}. {result.title} by {first_author_last_name(result.author_concise)} et al.")
+            print(f"    {idx + 1}. {result.title} by {faln(result.author_concise)} et al.")
         try:
             choice = int(input(f"Please select the correct paper (1-{len(results)}) or 0 to cancel: "))
             if choice == 0:
                 return
             elif 1 <= choice <= len(results):
-                google_metadata = results[choice - 1]
+                google_result = results[choice - 1]
             else:
                 return
         except ValueError:
             return
     else:
-        google_metadata = results[0]
+        google_result = results[0]
 
     # Step 3. Search on DBLP using the title and authors
     print(f"Searching on DBLP...")
-    dblp_results = search_dblp(google_metadata.title + ' ' + first_author_last_name(google_metadata.author_concise))
+    dblp_results = search_dblp(google_result.title + ' ' + faln(google_result.author_concise))
 
-    if len(dblp_results) < 1:
+    # find best matching results
+    dblp_result = None
+    for result in dblp_results:
+        if result.title.lower() == google_result.title.lower() and faln(result.author).lower() == faln(google_result.author_concise).lower():
+            dblp_result = result
+            break
+
+    if dblp_result is None:
         print(f"No results found on DBLP.")
         return
 
+    # get bibtex
+    bibtex, bibtex_condensed = parse_dblp_bibtex(dblp_result.dblp_url)
+
     # Step 4. Search on arXiv using the title and authors
     print(f"Searching on arXiv...")
-    arxiv_results = search_arxiv(google_metadata.title + ' ' + first_author_last_name(google_metadata.author_concise))
+    arxiv_results = search_arxiv(google_result.title + ' ' + faln(google_result.author_concise))
+
+    # find best matching results
+    arxiv_result = None
+    for result in arxiv_results:
+        if result.title.lower() == google_result.title.lower() and faln(result.author).lower() == faln(google_result.author_concise).lower():
+            arxiv_result = result
+            break
 
     # Step 5. Consolidate the metadata
-    paper = Paper(
-        title=dblp_results.title,
-        authors=dblp_results.author,
-        year=dblp_results.year,
-        venue=dblp_results.venue,
-        url=dblp_results.url,
-        arxiv_id=arxiv_paper.arxiv_id if arxiv_paper else None,
-        abstract=google_metadata.abstract,
-        num_citations=google_metadata.num_citations
+    return Reference(
+        author=dblp_result.author,
+        title=dblp_result.title,
+        year=dblp_result.year,
+        bibtex=bibtex,
+        bibtex_condensed=bibtex_condensed,
+        venue=dblp_result.venue,
+        url=arxiv_result.arxiv_id if arxiv_result else google_result.pub_url,
+        num_citations=google_result.num_citations,
     )
-
-    return paper
 
 
 @dataclass
@@ -74,10 +90,10 @@ class ArXivResult:
     summary: str
 
 
-def search_arxiv(query: str) -> list[ArXivResult]:
+def search_arxiv(query: str, max_results: int = 3) -> list[ArXivResult]:
     """Searches arXiv for the paper title and authors' last names, returns the arXiv URL if found."""
     query = f"ti:\"{query}\""
-    url = f"https://export.arxiv.org/api/query?search_query={requests.utils.quote(query)}&max_results=3"
+    url = f"https://export.arxiv.org/api/query?search_query={requests.utils.quote(query)}&max_results={max_results}"
     response = requests.get(url)
     if response.status_code != 200:
         print("Error accessing arXiv API.")
@@ -129,7 +145,7 @@ def search_arxiv(query: str) -> list[ArXivResult]:
 class GoogleScholarResult:
     author_concise: str
     title: str
-    num_citations: int
+    num_citations: str
     pub_url: str
 
 
@@ -167,7 +183,7 @@ def search_google_scholar(query: str, max_results: int = 3) -> list[GoogleSchola
             results.append(GoogleScholarResult(
                 author_concise=', '.join(paper['bib'].get('author', '').strip()),
                 title=paper['bib'].get('title', '').strip(),
-                num_citations=paper.get('num_citations', 0),
+                num_citations=str(paper.get('num_citations', 0)),
                 pub_url=paper.get('pub_url', '')
             ))
     except StopIteration:
@@ -183,7 +199,7 @@ class DBLPResult:
     venue: str
     year: str
     doi: str
-    is_conference: bool
+    dblp_url: str
 
 
 def search_dblp(query: str) -> list[DBLPResult]:
@@ -239,7 +255,37 @@ def search_dblp(query: str) -> list[DBLPResult]:
             venue=entry["info"]["venue"],
             year=entry["info"]["year"],
             doi=entry["info"]["doi"],
-            is_conference=entry["info"]["type"] == "Conference and Workshop Papers"
+            dblp_url=entry["info"]["url"]
         ))
 
     return results
+
+
+def replace_bibtex_key(bibtex_entry: str, new_key: str) -> str:
+    """
+    Replace the key of a BibTeX entry with a new key.
+
+    Parameters:
+    bibtex_entry (str): The original BibTeX entry.
+    new_key (str): The new key to replace the existing one.
+
+    Returns:
+    str: The BibTeX entry with the replaced key.
+    """
+    # Define a regex pattern to match the BibTeX entry key
+    pattern = r"@\w+\{([^\s,]+),"
+
+    # Replace the key in the BibTeX entry
+    modified_entry = re.sub(pattern, f"@\\g<0>{new_key},", bibtex_entry, count=1)
+
+    return modified_entry
+
+
+def parse_dblp_bibtex(url: str, ) -> (str, str):
+    bibtex = requests.get(f"{url}.bib?param=1").text
+    bibtex_condensed = requests.get(f"{url}.bib?param=0").text
+
+    # bibtex = replace_bibtex_key(bibtex, new_key)
+    # bibtex_condensed = replace_bibtex_key(bibtex_condensed, new_key)
+
+    return bibtex, bibtex_condensed

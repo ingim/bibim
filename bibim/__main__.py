@@ -10,9 +10,9 @@ import feedparser
 from scholarly import scholarly
 import openai
 
-from .search import search_reference
+from .reference import ReferencePage, ReferencePageTemplate
+from .search import search_reference, replace_bibtex_key
 from .index import Index, IndexTemplate
-from .page import Page, PageTemplate
 
 BIBIM_DIR = ".bibim"
 CONFIG_FILE = f"{BIBIM_DIR}/settings.json"
@@ -45,46 +45,17 @@ class Config:
                 },
                 "reference": {
                     "path": "references",
-                    "article": {
+                    "page": {
                         "fields": {
                             "author": ["**Author**: ", "\n"],
                             "title": ["# ", "\n"],
                             "year": ["**Year**: ", "\n"],
+                            "venue": ["**Venue**: ", "\n"],
                             "url": ["**URL**: ", "\n"],
-                            "journal": ["**Journal**: ", "\n"],
-                            "volume": ["**Volume**: ", "\n"],
-                            "doi": ["**DOI**: ", "\n"],
-                            "arxiv": ["**arXiv**: ", "\n"],
-                            "abstract": ["**Abstract**: ", "\n"],
-                            "num_citations": ["**Citations**: ", "\n"]
                         },
-                        "layout": "{title}{author}{journal}{volume}{year}{url}{arxiv}{doi}{num_citations}"
+                        "layout": "{title}{author}{venue}{year}{url}"
                     },
-                    "proceedings": {
-                        "fields": {
-                            "author": ["**Author**: ", "\n"],
-                            "title": ["# ", "\n"],
-                            "year": ["**Year**: ", "\n"],
-                            "url": ["**URL**: ", "\n"],
-                            "booktitle": ["**Venue**: ", "\n"],
-                            "publisher": ["**Publisher**: ", "\n"],
-                            "doi": ["**DOI**: ", "\n"],
-                            "arxiv": ["**arXiv**: ", "\n"],
-                            "abstract": ["**Abstract**: ", "\n"],
-                            "num_citations": ["**Citations**: ", "\n"]
-                        },
-                        "layout": "{title}{author}{booktitle}{year}{url}{arxiv}{doi}{num_citations}"
-                    },
-                    "misc": {
-                        "fields": {
-                            "author": ["**Author**: ", "\n"],
-                            "title": ["# ", "\n"],
-                            "year": ["**Year**: ", "\n"],
-                            "url": ["**URL**: ", "\n"],
-                            "note": ["**Note**: ", "\n"]
-                        },
-                        "layout": "{title}{author}{year}{url}{note}"
-                    },
+
                 },
             }
             json.dump(settings, f, indent=4)
@@ -114,8 +85,8 @@ class Config:
         return self.entries['reference']['path']
 
     @property
-    def reference_template(self) -> PageTemplate:
-        return PageTemplate(self.entries['reference']['entries'], self.entries['reference']['layout'])
+    def reference_template(self) -> ReferencePageTemplate:
+        return ReferencePageTemplate(self.entries['reference']['page']['entries'], self.entries['reference']['page']['layout'])
 
 
 # Initialize bibim repository
@@ -135,36 +106,40 @@ def add_reference(title: str, table_name: str | None = None):
 
     index = Index.load(cfg.index_path, cfg.index_template)
 
-    paper = search_reference(title, ask_user=True)
-    if not paper:
+    ref = search_reference(title, ask_user=True)
+    if not ref:
         return
 
     # e.g., gim2023prompt
-    paper_id = f"{paper.author[0].last_name.lower()}{paper.year}{paper.title.split()[0].lower()}"
-    paper_ref_path = os.path.join(cfg.reference_path, f"{paper_id}.md")
+    ref_id = f"{ref.author_last_names[0].lower()}{ref.year}{ref.title.split()[0].lower()}"
+    ref_page_path = os.path.join(cfg.reference_path, f"{ref_id}.md")
 
     # increment a, b, c, ... to the filename and see if it exists
-    if os.path.exists(paper_ref_path):
+    if os.path.exists(ref_page_path):
         for i in range(ord('a'), ord('z') + 1):
-            paper_ref_path = os.path.join(cfg.reference_path, f"{paper_id}{chr(i)}.md")
-            if not os.path.exists(paper_ref_path):
-                paper_id += f"{chr(i)}"
+            ref_page_path = os.path.join(cfg.reference_path, f"{ref_id}{chr(i)}.md")
+            if not os.path.exists(ref_page_path):
+                ref_id += f"{chr(i)}"
                 break
+
+    # Update the ref id in the reference object
+    ref.bibtex = replace_bibtex_key(ref.bibtex, ref_id)
+    ref.bibtex_condensed = replace_bibtex_key(ref.bibtex_condensed, ref_id)
 
     index.insert_row(
         {
-            "title": paper.title,
-            "authors_concise": paper.author_concise,
-            "venue": paper.venue,
-            "year": paper.year,
-            "citations": paper.num_citations,
-            "reference": f"[{paper_ref_path}]({paper_ref_path})"
+            "title": ref.title,
+            "authors_concise": ref.author_concise,
+            "venue": ref.venue,
+            "year": ref.year,
+            "citations": ref.num_citations,
+            "reference": f"[{ref_page_path}]({ref_page_path})"
         },
         table_name=table_name)
 
-    Page.create(paper.to_page_entry(), paper_ref_path, cfg.reference_template)
+    ReferencePage.create(ref_page_path, ref, cfg.reference_template)
 
-    print(f"Reference '{paper.title}' added as '{paper_id}'.")
+    print(f"Reference '{ref.title}' added as '{ref_id}'.")
 
 
 def update_references():
@@ -178,24 +153,23 @@ def update_references():
 
         for i, row in enumerate(table.rows):
             query = f"{row.entry['title']} {row.entry['authors_concise'].split()[-1]}"
-            paper = search_reference(query, ask_user=False)
+            ref = search_reference(query, ask_user=False)
 
-            if not paper:
+            if not ref:
                 print(f"No metadata found for '{row.entry['title']}'. Skipping.")
                 continue
 
-            paper_ref_path = row.entry['reference']
-            paper_page = Page.load(paper_ref_path, cfg.reference_template)
-            paper_page.data = paper.to_page_entry()
-            paper_page.save()
+            ref_path = row.entry['reference']
+            ref_page = ReferencePage.load(ref_path, cfg.reference_template)
+            ref_page.update(ref)
 
             index.update_row(i, {
-                "title": paper.title,
-                "authors_concise": paper.author_concise,
-                "venue": paper.venue,
-                "year": paper.year,
-                "citations": paper.num_citations,
-                "reference": f"[{paper_ref_path}]({paper_ref_path})"
+                "title": ref.title,
+                "authors_concise": ref.author_concise,
+                "venue": ref.venue,
+                "year": ref.year,
+                "citations": ref.num_citations,
+                "reference": f"[{ref_path}]({ref_path})"
             }, table_name=table_name)
 
 
@@ -291,9 +265,11 @@ def main():
     parser_new = subparsers.add_parser('init', help='Initialize a new bibliography repository')
     parser_add = subparsers.add_parser('add', help='Add a reference')
     parser_add.add_argument('title', help='Paper title')
+    parser_add.add_argument('--table', help='Table name', default=None)
 
     parser_update = subparsers.add_parser('update', help='Update the references')
     parser_bibtex = subparsers.add_parser('bibtex', help='Generate a bibtex file')
+    parser_bibtex.add_argument('--condensed', help='Markdown file', default=True)
 
     args = parser.parse_args()
 

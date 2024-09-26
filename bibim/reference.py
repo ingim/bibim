@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-import abc
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+
+from bibim.index import extract_between
 
 
 @dataclass
-class Reference(abc.ABC):
+class Reference:
     author: str
     title: str
     year: str
+    bibtex: str
+    bibtex_condensed: str | None
+    venue: str | None
     url: str | None
+    num_citations: str | None
 
     @property
     def author_last_names(self) -> list[str]:
@@ -32,77 +37,130 @@ class Reference(abc.ABC):
 
         return True
 
-    @abc.abstractmethod
-    def to_bibtex(self, key: str) -> str:
-        ...
+
+class ReferencePageTemplate:
+    entries: dict[str, (str, str)]
+    layout: str
+
+    def __init__(self, entries: dict[str, (str, str)], layout: str):
+        self.entries = entries
+        self.layout = layout
 
 
-@dataclass
-class Article(Reference):
-    journal: str
-    volume: str | None
-    doi: str | None
-    arxiv: str | None
-    num_citations: str | None
+class ReferencePage:
+    path: str
+    template: ReferencePageTemplate
+    ref: Reference
 
-    def to_bibtex(self, key: str) -> str:
-        res = f"@article{{{key},\n"
-        res += f"    author = {{{self.author}}},\n"
-        res += f"    title = {{{self.title}}},\n"
-        res += f"    journal = {{{self.journal}}},\n"
-        res += f"    year = {{{self.year}}},\n"
-        if self.url:
-            res += f"    url = {{{self.url}}},\n"
-        if self.volume:
-            res += f"    volume = {{{self.volume}}},\n"
-        if self.doi:
-            res += f"    doi = {{{self.doi}}},\n"
-        if self.arxiv:
-            res += f"    arxiv = {{{self.arxiv}}},\n"
-        res += "}\n"
+    def __init__(self, path: str, ref: Reference, template: ReferencePageTemplate):
+        self.path = path
+        self.ref = ref
+        self.template = template
 
-        return res
+    @staticmethod
+    def create(path: str, ref: Reference, template: ReferencePageTemplate) -> ReferencePage:
 
+        page = ReferencePage(path, ref, template)
 
-@dataclass
-class Proceedings(Reference):
-    booktitle: str
-    publisher: str
-    doi: str | None
-    arxiv: str | None
-    num_citations: str | None
+        contents = template.layout.format_map(asdict(ref))
+        contents += "\n\n" + "```bibtex\n" + ref.bibtex + "\n```"
+        contents += "\n\n" + "```bibtex\n" + ref.bibtex_condensed + "\n```"
 
-    def to_bibtex(self, key: str) -> str:
-        res = f"@inproceedings{{{key},\n"
-        res += f"    author = {{{self.author}}},\n"
-        res += f"    title = {{{self.title}}},\n"
-        res += f"    booktitle = {{{self.booktitle}}},\n"
-        res += f"    year = {{{self.year}}},\n"
-        res += f"    publisher = {{{self.publisher}}},\n"
-        if self.url:
-            res += f"    url = {{{self.url}}},\n"
-        if self.doi:
-            res += f"    doi = {{{self.doi}}},\n"
-        if self.arxiv:
-            res += f"    arxiv = {{{self.arxiv}}},\n"
-        res += "}\n"
+        with open(path, 'w') as f:
+            f.write(contents)
 
-        return res
+        return page
 
+    @staticmethod
+    def load(path: str, template: ReferencePageTemplate) -> ReferencePage:
 
-@dataclass
-class Misc(Reference):
-    note: str | None
+        # Load tables from path
+        with open(path, 'r') as f:
+            lines = f.readlines()
 
-    def to_bibtex(self, key: str) -> str:
-        res = f"@misc{{{key},\n"
-        res += f"    author = {{{self.author}}},\n"
-        res += f"    title = {{{self.title}}},\n"
-        res += f"    year = {{{self.year}}},\n"
-        if self.url:
-            res += f"    url = {{{self.url}}},\n"
-        if self.note:
-            res += f"    note = {{{self.note}}},\n"
-        res += "}\n"
+        bibtext = []
 
-        return res
+        parsing_bibtex = False
+        bibtex_lines = []
+
+        entries = {}
+
+        for line in lines:
+
+            if line.startswith("```bibtex") and not parsing_bibtex:
+                parsing_bibtex = True
+                bibtex_lines = []
+                continue
+
+            if line.startswith("```") and parsing_bibtex:
+                parsing_bibtex = False
+                bibtext.append('\n'.join(bibtex_lines))
+                continue
+
+            if parsing_bibtex:
+                bibtex_lines.append(line)
+                continue
+
+            for key, (prefix, suffix) in template.entries.items():
+                if key not in entries:
+                    value = extract_between(line, prefix, suffix)
+                    if value:
+                        entries[key] = value
+                        break
+
+        entries['bibtex'] = bibtext[0]
+        entries['bibtex_condensed'] = bibtext[1]
+
+        ref = Reference(**entries)
+        page = ReferencePage(path, ref, template)
+
+        return page
+
+    def update(self, ref: Reference):
+
+        self.ref = ref
+
+        # Load tables from path
+        with open(self.path, 'r') as f:
+            lines = f.readlines()
+
+        new_lines = []
+        saved = {}
+        ref_dict = asdict(self.ref)
+
+        parsing_bibtex = False
+        bibtex_count = 0
+
+        for line in lines:
+
+            if line.startswith("```bibtex") and not parsing_bibtex:
+                parsing_bibtex = True
+                continue
+
+            if line.startswith("```") and parsing_bibtex:
+                parsing_bibtex = False
+
+                if bibtex_count == 0:
+                    new_lines.append(self.ref.bibtex)
+                else:
+                    new_lines.append(self.ref.bibtex_condensed)
+
+                bibtex_count += 1
+                continue
+
+            if parsing_bibtex:
+                continue
+
+            updated = False
+            for key, (prefix, suffix) in self.template.entries.items():
+                if key not in saved:
+                    if extract_between(line, prefix, suffix):
+                        saved[key] = True
+                        new_lines.append(prefix + ref_dict[key] + suffix)
+                        updated = True
+                        break
+            if not updated:
+                new_lines.append(line)
+
+        with open(self.path, 'w') as f:
+            f.writelines(new_lines)
