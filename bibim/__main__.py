@@ -7,7 +7,7 @@ import re
 
 from .reference import ReferencePage, ReferencePageTemplate
 from .search import search_reference, replace_bibtex_key
-from .index import Index, IndexTemplate, find_best_matching_table
+from .index import Index, IndexTemplate
 
 BIBIM_DIR = ".bibim"
 CONFIG_FILE = f"{BIBIM_DIR}/settings.json"
@@ -91,7 +91,7 @@ def initialize_repository():
     # check if the directory exists
     if os.path.exists(BIBIM_DIR):
         print("Error: bibim repository already exists.")
-        # exit(1)
+        exit(1)
 
     os.makedirs(BIBIM_DIR, exist_ok=True)
     cfg = Config.create(CONFIG_FILE)
@@ -106,6 +106,10 @@ def add_reference(title: str, table_name: str | None = None):
     cfg = Config.load(CONFIG_FILE)
 
     index = Index.load(cfg.index_path, cfg.index_template)
+
+    if table_name is not None and index.search_table(table_name) is None:
+        print(f"Error: Table '{table_name}' not found.")
+        return
 
     ref = search_reference(title, ask_user=True)
     if not ref:
@@ -154,8 +158,12 @@ def update_references(table_name: str | None = None):
 
     index = Index.load(cfg.index_path, cfg.index_template)
 
+    if table_name is not None and index.search_table(table_name) is None:
+        print(f"Error: Table '{table_name}' not found.")
+        return
+
     if table_name is not None:
-        table_name_target = find_best_matching_table(list(index.tables.keys()), table_name)
+        table_name_target = index.search_table(table_name)
     else:
         table_name_target = None
 
@@ -165,12 +173,21 @@ def update_references(table_name: str | None = None):
             continue
 
         for i, row in enumerate(table.rows):
-            query = f"{row.entry['title']} {row.entry['authors_concise'].split()[-1]}"
-            ref = search_reference(query, ask_user=False)
+
+            print(f"Updating \"{row.entry['title']}\"...")
+
+            ref_id = row.entry['reference'].split('/')[-1].split('.')[0]
+
+            query = f"{row.entry['title']}"
+            ref = search_reference(query, ask_user=False, verbose=False)
 
             if not ref:
                 print(f"No metadata found for '{row.entry['title']}'. Skipping.")
                 continue
+
+            # Update the ref id in the reference object
+            ref.bibtex = replace_bibtex_key(ref.bibtex, ref_id)
+            ref.bibtex_condensed = replace_bibtex_key(ref.bibtex_condensed, ref_id)
 
             ref_path = row.entry['reference']
             ref_page = ReferencePage.load(ref_path, cfg.reference_template)

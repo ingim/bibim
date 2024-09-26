@@ -13,12 +13,14 @@ def faln(author: str) -> str:
     return author.split(',')[0].split()[-1].strip()
 
 
-def search_reference(title: str, ask_user: bool = False) -> Reference | None:
+def search_reference(title: str, ask_user: bool = False, verbose: bool = True) -> Reference | None:
     # Step 1. Search on Google Scholar
-    print(f"Searching on Google Scholar...")
+    if verbose:
+        print(f"Searching on Google Scholar...")
     results = search_google_scholar(title)
     if not results:
-        print(f"No results found on Google Scholar.")
+        if verbose:
+            print(f"No results found on Google Scholar.")
         return
     elif len(results) == 1:
         google_result = results[0]
@@ -41,7 +43,8 @@ def search_reference(title: str, ask_user: bool = False) -> Reference | None:
         google_result = results[0]
 
     # Step 3. Search on DBLP using the title and authors
-    print(f"Searching on DBLP...")
+    if verbose:
+        print(f"Searching on DBLP...")
     dblp_results = search_dblp(google_result.title + ' ' + faln(google_result.author_concise))
 
     # find best matching results
@@ -52,21 +55,26 @@ def search_reference(title: str, ask_user: bool = False) -> Reference | None:
             break
 
     if dblp_result is None:
-        print(f"No results found on DBLP.")
+        if verbose:
+            print(f"No results found on DBLP.")
 
     # get bibtex
     bibtex, bibtex_condensed = parse_dblp_bibtex(dblp_result.dblp_url)
 
     # Step 4. Search on arXiv using the title and authors
-    print(f"Searching on arXiv...")
-    arxiv_results = search_arxiv(google_result.title + ' ' + faln(google_result.author_concise))
+    if verbose:
+        print(f"Searching on arXiv...")
+    try:
+        arxiv_results = search_arxiv(google_result.title + ' ' + faln(google_result.author_concise))
+        arxiv_result = None
+        for result in arxiv_results:
+            if result.title.lower() == google_result.title.lower() and faln(result.author).lower() == faln(google_result.author_concise).lower():
+                arxiv_result = result
+                break
+    except:
+        arxiv_result = None
 
     # find best matching results
-    arxiv_result = None
-    for result in arxiv_results:
-        if result.title.lower() == google_result.title.lower() and faln(result.author).lower() == faln(google_result.author_concise).lower():
-            arxiv_result = result
-            break
 
     if dblp_result is None:
 
@@ -104,7 +112,7 @@ class ArXivResult:
     summary: str
 
 
-def search_arxiv(query: str, max_results: int = 1) -> list[ArXivResult]:
+def search_arxiv(query: str, max_results: int = 3) -> list[ArXivResult]:
     """Searches arXiv for the paper title and authors' last names, returns the arXiv URL if found."""
     query = f"ti:\"{query}\""
     url = f"https://export.arxiv.org/api/query?search_query={requests.utils.quote(query)}&max_results={max_results}"
@@ -259,7 +267,7 @@ def search_dblp(query: str) -> list[DBLPResult]:
         def author_name_clean(author_name: str) -> str:
             return re.sub(r'\s+\d{4}$', '', author_name)
 
-        author = ','.join([author_name_clean(author["text"]) for author in author_list])
+        author = ', '.join([author_name_clean(author["text"]) for author in author_list])
 
         title = entry["info"]["title"].strip()
         if title[-1] == '.':

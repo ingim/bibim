@@ -85,6 +85,9 @@ class Index:
         self.template = template
         self.tables = {}
 
+    def search_table(self, query:str) -> str | None:
+        return find_best_matching_table(list(self.tables.keys()), query)
+
     @staticmethod
     def create(path: str, template: IndexTemplate) -> Index:
 

@@ -117,8 +117,12 @@ class ReferencePage:
                         entries[key] = value
                         break
 
-        entries['bibtex'] = bibtext[0]
-        entries['bibtex_condensed'] = bibtext[1]
+        if len(bibtext) == 1:
+            entries['bibtex'] = bibtext[0]
+        elif len(bibtext) > 1:
+            entries['bibtex_condensed'] = bibtext[1]
+        else:
+            print(f"Warning: No bibtex found in {path}")
 
         ref = Reference(**entries)
         page = ReferencePage(path, ref, template)
@@ -144,16 +148,17 @@ class ReferencePage:
 
             if line.startswith("```bibtex") and not parsing_bibtex:
                 parsing_bibtex = True
+                new_lines.append(line)
                 continue
 
             if line.startswith("```") and parsing_bibtex:
                 parsing_bibtex = False
 
                 if bibtex_count == 0:
-                    new_lines.append(self.ref.bibtex)
+                    new_lines.append(self.ref.bibtex.strip() + "\n")
                 else:
-                    new_lines.append(self.ref.bibtex_condensed)
-
+                    new_lines.append(self.ref.bibtex_condensed.strip() + "\n")
+                new_lines.append(line + "\n")
                 bibtex_count += 1
                 continue
 
@@ -172,4 +177,4 @@ class ReferencePage:
                 new_lines.append(line)
 
         with open(self.path, 'w') as f:
-            f.writelines(new_lines)
+            f.write(''.join(new_lines))
