@@ -1,17 +1,22 @@
 # bibim
+
 [![PyPI version](https://img.shields.io/pypi/v/bibim)](https://pypi.org/project/bibim/)
 
-bibim is a command-line tool designed to simplify bibliography management for computer science research. It allows you to maintain your references directly within markdown files, automatically fetch and update citation data, and generate BibTeX files.
+`bibim` is a command-line tool that simplifies bibliography management for computer science research. It allows you to
+manage references directly within Markdown files, automatically fetch and update citation data, and generate BibTeX
+files.
 
+## Features
 
-- **Markdown-based bibliography management**: Manage your bibliography within markdown files to seamlessly integrate with your research notes.
-- **Automatic BibTeX generation**: Eliminate the hassle of maintaining separate `.bib` files and ensure consistent formatting across your references.
-- **Up-to-date references**: Automatically keep your paper attributes current, without manually tracking changes from preprints to published versions.
-
+- **Markdown-based management**: Seamlessly integrate your bibliography within your research notes.
+- **Automatic BibTeX generation**: No need to maintain separate `.bib` files; ensures consistent formatting across
+  references.
+- **Up-to-date references**: Automatically keep paper attributes current without manual tracking from preprints to
+  published versions.
 
 ## Installation
 
-Install bibim using pip:
+Requires Python 3.8 or higher.
 
 ```bash
 $ pip install bibim
@@ -19,68 +24,106 @@ $ pip install bibim
 
 ## Usage
 
+### 1. Initialize a New Repository
 
-### 1. Initialize a new bibim repository
-
-Similar to initializing a new git repository, you can convert a folder into a bibim repository with `bibim init`. This will create a `index.md` file in the current directory, along with a `.bibim/settings.json` file to store your preferences.
+Convert a folder into a `bibim` repository:
 
 ```bash
 $ bibim init
 ```
 
-**Overview of the `.bibim/settings.json` file**:
+This creates an `index.md` file and a `.bibim` directory for preferences.
+
+#### Multiple Tables
+
+You can have multiple tables in `index.md`, each representing a different category (e.g., `System`, `AI`). Add a
+Markdown header above each table:
+
+```markdown
+# System
+
+# AI
+```
+
+#### Customizing Markdown Formatting
+
+Modify formatting options in `.bibim/settings.json`. For example, to change the default column order:
 
 ```json
 {
-  "ai": {
-    "generate_summary": true,
-    "summary_prompt": "(omitted)"
-  },
-  "index": "index.md",
-  "references": "./references"  
+  "columns": [
+    "title",
+    "authors_concise",
+    "venue",
+    "year",
+    "num_citations",
+    "reference"
+  ]
 }
 ```
 
+### 2. Add a Reference
 
-### 2. Add a reference
-
-Add a reference to your bibliography markdown file by simply typing the paper title or the author names. The reference will be appended to the table. This will create a new file as `./references/{author}{year}{first word of title}.md`, with the full metadata, including the paper abstract. Also, the new index will be added in the `index.md`, with concise metadata like the abbreviated author names (only the first and the last author), title, venue, year, and citation count, as well as the link to the full reference markdown file.
+Add a reference by providing the paper title or author names:
 
 ```bash
-bibim add "attn is all u need vaswani"
+$ bibim add "attention is all you need vaswani"
 ```
 
-- **Automated metadata retrieval**: Searches [Google Scholar](https://scholar.google.com) and [DBLP](https://dblp.org) for the paper title to fill in authors, publication venue, and year.
-- **Citation counts**: Retrieves the current citation count from Google Scholar.
-- **Paper summary**: Generates a concise summary using OpenAI's API [if an API key is set](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety).
-- **ArXiv links**: Includes direct links to [arXiv](https://arxiv.org) if the paper is available there.
+This creates a new file in `./references/{author}{year}{firstwordoftitle}.md` with full metadata and updates `index.md`
+with concise metadata (abbreviated author names, title, venue, year, citation count, and a link to the full reference).
 
+- **Automated metadata retrieval**: Searches [Google Scholar](https://scholar.google.com) and [DBLP](https://dblp.org)to
+  fill in authors, venue, and year.
+- **Citation counts**: Retrieves current citation counts from Google Scholar.
+- **arXiv links**: Includes direct links if available.
 
+#### Specify a Target Table
 
-### 4. Update references
-
-Updates all reference metadata in the bibliography markdown file. This keeps any user-added columns or notes intact.
+Add a reference to a specific table:
 
 ```bash
-bibim update
+$ bibim add "few shot learners" --table "ai"
 ```
 
+Table titles are case-insensitive. If not specified, the reference is added to the first table in `index.md`.
 
-### 5. Generate a BibTeX file
+### 3. Update References
 
-Generates a BibTeX file from your bibliography markdown file. bibim formats entry IDs as `[author][year][first word of title]` using lowercase letters and numbers.
+Update all reference metadata, keeping any user-added columns or notes intact:
 
 ```bash
-bibim bibtex
+$ bibim update
+```
+
+You can also update a specific table:
+
+```bash
+$ bibim update --table "ai"
+```
+
+### 4. Generate a BibTeX File
+
+Generate a BibTeX file from your bibliography:
+
+```bash
+$ bibim bibtex
+```
+
+Entry IDs are formatted as `[author][year][firstwordoftitle]` in lowercase.
+
+### 5. Formatting Markdown
+
+To beautify the `index.md`, run:
+
+```bash
+$ bibim format
 ```
 
 ## Contributing
 
-We welcome pull requests. For major changes, please open an issue to discuss your ideas before contributing.
-
+We welcome pull requests. For major changes, please open an issue to discuss your ideas.
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
-
-
+[MIT License](LICENSE)
