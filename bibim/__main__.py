@@ -173,89 +173,35 @@ def update_references():
             }, table_name=table_name)
 
 
-def generate_bibtex(filename):
+def generate_bibtex(path: str = 'references', condensed: bool = True):
     cfg = Config.load(CONFIG_FILE)
 
     index = Index.load(cfg.index_path, cfg.index_template)
 
+    lines = []
+
     for table_name, table in index.tables.items():
 
+        lines.append("%" * 40)
+        lines.append(f"% {table_name}")
+        lines.append("%" * 40)
+
         for row in table.rows:
-            page = Page.load(row.entry['reference'], cfg.reference_template)
-            paper_id = row.entry['reference'].split('/')[-1].split('.')[0]
-            paper = Paper.from_page_entry(page.data)
+            page = ReferencePage.load(row.entry['reference'], cfg.reference_template)
 
-        ...
-
-    """Generates a bibtex file from the bibliography markdown file."""
-    entries, headers = read_table(filename)
-    bibtex_entries = ""
-    existing_keys = {}
-    for entry in entries:
-        title_raw = entry.get('Title', '')
-
-        title = title_raw.split('](')[0][1:]
-        paper_ref_path = title_raw.split('](')[1][:-1]  # e.g., gim2023prompt
-
-        # read the markdown file
-        with open(paper_ref_path, 'r') as f:
-            lines = f.readlines()
-
-        # Extract metadata from the markdown file
-        authors = ''
-        venue = ''
-        year = ''
-        url_cell = ''
-        for line in lines:
-            if line.startswith('**Authors**:'):
-                authors = line.split(':', 1)[1].strip()
-            elif line.startswith('**Venue**:'):
-                venue = line.split(':', 1)[1].strip()
-            elif line.startswith('**Year**:'):
-                year = line.split(':', 1)[1].strip()
-            elif line.startswith('**Links**:'):
-                url_cell = line.split(':', 1)[1].strip()
-
-        if not (title and authors and year):
-            continue
-        # Extract the last name of the first author
-        first_author_last_name = authors.split(',')[0].split()[-1]
-        # Extract the first word of the title
-        first_word_title = title.split()[0]
-        # Build the base bibtex key
-        bibtex_key_base = f"{first_author_last_name}{year}{first_word_title}"
-        # Keep only lowercase letters and numbers
-        bibtex_key_base = ''.join(c for c in bibtex_key_base.lower() if c.isalnum())
-        # Handle duplicates by appending numbers
-        bibtex_key = bibtex_key_base
-        count = 1
-        while bibtex_key in existing_keys:
-            count += 1
-            bibtex_key = f"{bibtex_key_base}{count}"
-        existing_keys[bibtex_key] = True
-        # Start building the bibtex entry
-        bibtex_entry = f"@article{{{bibtex_key},\n"
-        bibtex_entry += f"  title={{{title}}},\n"
-        bibtex_entry += f"  author={{{authors}}},\n"
-        bibtex_entry += f"  journal={{{venue}}},\n"
-        bibtex_entry += f"  year={{ {year} }},\n"
-        # Extract URLs from the 'URL' field
-        urls = re.findall(r'\[.*?\]\((.*?)\)', url_cell)
-        if urls:
-            # Add the first URL as the main URL
-            bibtex_entry += f"  url={{ {urls[0]} }},\n"
-            # If there's an arXiv URL, add it as 'eprint' or as a note
-            for url in urls[1:]:
-                if 'arxiv.org' in url.lower():
-                    bibtex_entry += f"  eprint={{ {url} }},\n"
+            if condensed:
+                if page.ref.bibtex_condensed is None:
+                    lines.append(page.ref.bibtex)
                 else:
-                    bibtex_entry += f"  note={{Available at {url}}},\n"
-        bibtex_entry += "}\n\n"
-        bibtex_entries += bibtex_entry
-    bibtex_filename = os.path.splitext(filename)[0] + '.bib'
-    with open(bibtex_filename, 'w', encoding='utf-8') as f:
-        f.write(bibtex_entries)
-    print(f"Bibtex file '{bibtex_filename}' has been generated.")
+                    lines.append(page.ref.bibtex_condensed)
+            else:
+                lines.append(page.ref.bibtex)
+
+    path = path + '.bib'
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+
+    print(f"Bibtex file '{path}.bib' has been generated.")
 
 
 def main():
@@ -269,6 +215,7 @@ def main():
 
     parser_update = subparsers.add_parser('update', help='Update the references')
     parser_bibtex = subparsers.add_parser('bibtex', help='Generate a bibtex file')
+    parser_bibtex.add_argument('--path', help='Bibtex file', default='ref')
     parser_bibtex.add_argument('--condensed', help='Markdown file', default=True)
 
     args = parser.parse_args()
@@ -276,14 +223,13 @@ def main():
     if args.command == 'init':
         initialize_repository()
     elif args.command == 'add':
-        add_reference(args.title, ask_user=True)
+        add_reference(args.title, args.table)
     elif args.command == 'update':
         update_references()
     elif args.command == 'bibtex':
-        generate_bibtex()
+        generate_bibtex(args.path, args.condensed)
     else:
         parser.print_help()
 
-
-if __name__ == '__main__':
-    main()
+    if __name__ == '__main__':
+        main()
