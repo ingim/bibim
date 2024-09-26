@@ -4,14 +4,14 @@ from setuptools import setup
 
 setup(
     name='bibim',
-    version='0.2.0',
+    version='0.2.1',
     description='Minimalistic, markdown-based reference manager for computer science research',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     author='In Gim',
     author_email='in.gim@yale.edu',
     url='https://github.com/ingim/bibim',
-    py_modules=['bibim'],
+    packages=['bibim'],
     install_requires=[
         'requests',
         'scholarly',
