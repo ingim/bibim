@@ -53,7 +53,6 @@ def search_reference(title: str, ask_user: bool = False) -> Reference | None:
 
     if dblp_result is None:
         print(f"No results found on DBLP.")
-        return
 
     # get bibtex
     bibtex, bibtex_condensed = parse_dblp_bibtex(dblp_result.dblp_url)
@@ -69,17 +68,32 @@ def search_reference(title: str, ask_user: bool = False) -> Reference | None:
             arxiv_result = result
             break
 
-    # Step 5. Consolidate the metadata
-    return Reference(
-        author=dblp_result.author,
-        title=dblp_result.title,
-        year=dblp_result.year,
-        bibtex=bibtex,
-        bibtex_condensed=bibtex_condensed,
-        venue=dblp_result.venue,
-        url=arxiv_result.arxiv_id if arxiv_result else google_result.pub_url,
-        num_citations=google_result.num_citations,
-    )
+    if dblp_result is None:
+
+        return Reference(
+            author=google_result.author_concise,
+            title=google_result.title,
+            year=None,
+            bibtex=bibtex,
+            bibtex_condensed=bibtex_condensed,
+            venue=None,
+            url=google_result.pub_url,
+            num_citations=google_result.num_citations,
+        )
+
+    else:
+
+        # Step 5. Consolidate the metadata
+        return Reference(
+            author=dblp_result.author,
+            title=dblp_result.title,
+            year=dblp_result.year,
+            bibtex=bibtex,
+            bibtex_condensed=bibtex_condensed,
+            venue=dblp_result.venue,
+            url=arxiv_result.arxiv_id if arxiv_result else google_result.pub_url,
+            num_citations=google_result.num_citations,
+        )
 
 
 @dataclass
@@ -90,7 +104,7 @@ class ArXivResult:
     summary: str
 
 
-def search_arxiv(query: str, max_results: int = 3) -> list[ArXivResult]:
+def search_arxiv(query: str, max_results: int = 1) -> list[ArXivResult]:
     """Searches arXiv for the paper title and authors' last names, returns the arXiv URL if found."""
     query = f"ti:\"{query}\""
     url = f"https://export.arxiv.org/api/query?search_query={requests.utils.quote(query)}&max_results={max_results}"
@@ -181,7 +195,7 @@ def search_google_scholar(query: str, max_results: int = 3) -> list[GoogleSchola
             paper = next(search_query)
 
             results.append(GoogleScholarResult(
-                author_concise=', '.join(paper['bib'].get('author', '').strip()),
+                author_concise=', '.join(paper['bib'].get('author', '')),
                 title=paper['bib'].get('title', '').strip(),
                 num_citations=str(paper.get('num_citations', 0)),
                 pub_url=paper.get('pub_url', '')
@@ -198,7 +212,6 @@ class DBLPResult:
     title: str
     venue: str
     year: str
-    doi: str
     dblp_url: str
 
 
@@ -243,7 +256,10 @@ def search_dblp(query: str) -> list[DBLPResult]:
         if isinstance(author_list, dict):
             author_list = [author_list]
 
-        author = ','.join([author["text"] for author in author_list])
+        def author_name_clean(author_name: str) -> str:
+            return re.sub(r'\s+\d{4}$', '', author_name)
+
+        author = ','.join([author_name_clean(author["text"]) for author in author_list])
 
         title = entry["info"]["title"].strip()
         if title[-1] == '.':
@@ -254,7 +270,6 @@ def search_dblp(query: str) -> list[DBLPResult]:
             title=title,
             venue=entry["info"]["venue"],
             year=entry["info"]["year"],
-            doi=entry["info"]["doi"],
             dblp_url=entry["info"]["url"]
         ))
 
@@ -262,23 +277,16 @@ def search_dblp(query: str) -> list[DBLPResult]:
 
 
 def replace_bibtex_key(bibtex_entry: str, new_key: str) -> str:
-    """
-    Replace the key of a BibTeX entry with a new key.
+    # Pattern to match the key in a BibTeX entry
+    pattern = r'(@\w+\{\s*)(.*?)(\s*,)'
 
-    Parameters:
-    bibtex_entry (str): The original BibTeX entry.
-    new_key (str): The new key to replace the existing one.
+    # Function to replace the key
+    def replacer(match):
+        return match.group(1) + new_key + match.group(3)
 
-    Returns:
-    str: The BibTeX entry with the replaced key.
-    """
-    # Define a regex pattern to match the BibTeX entry key
-    pattern = r"@\w+\{([^\s,]+),"
-
-    # Replace the key in the BibTeX entry
-    modified_entry = re.sub(pattern, f"@\\g<0>{new_key},", bibtex_entry, count=1)
-
-    return modified_entry
+    # Replace the old key with the new key
+    new_bibtex_entry = re.sub(pattern, replacer, bibtex_entry, count=1)
+    return new_bibtex_entry
 
 
 def parse_dblp_bibtex(url: str, ) -> (str, str):

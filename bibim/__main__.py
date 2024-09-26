@@ -5,14 +5,9 @@ import os
 import json
 import re
 
-import requests
-import feedparser
-from scholarly import scholarly
-import openai
-
 from .reference import ReferencePage, ReferencePageTemplate
 from .search import search_reference, replace_bibtex_key
-from .index import Index, IndexTemplate
+from .index import Index, IndexTemplate, find_best_matching_table
 
 BIBIM_DIR = ".bibim"
 CONFIG_FILE = f"{BIBIM_DIR}/settings.json"
@@ -36,7 +31,7 @@ class Config:
                     "headers": {
                         "title": "Title",
                         "authors_concise": "Authors",
-                        "venue": "Venus",
+                        "venue": "Venue",
                         "year": "Year",
                         "num_citations": "Citations",
                         "reference": "Reference"
@@ -47,13 +42,13 @@ class Config:
                     "path": "references",
                     "page": {
                         "fields": {
-                            "author": ["**Author**: ", "\n"],
-                            "title": ["# ", "\n"],
-                            "year": ["**Year**: ", "\n"],
-                            "venue": ["**Venue**: ", "\n"],
-                            "url": ["**URL**: ", "\n"],
+                            "author": ["**Author**: ", "  \n"],
+                            "title": ["# ", "  \n"],
+                            "year": ["**Year**: ", "  \n"],
+                            "venue": ["**Venue**: ", "  \n"],
+                            "url": ["**URL**: ", "  \n"],
                         },
-                        "layout": "{title}{author}{venue}{year}{url}"
+                        "layout": "{title}\n{author}{venue}{year}{url}"
                     },
 
                 },
@@ -86,12 +81,18 @@ class Config:
 
     @property
     def reference_template(self) -> ReferencePageTemplate:
-        return ReferencePageTemplate(self.entries['reference']['page']['entries'], self.entries['reference']['page']['layout'])
+        return ReferencePageTemplate(self.entries['reference']['page']['fields'], self.entries['reference']['page']['layout'])
 
 
 # Initialize bibim repository
 def initialize_repository():
     """Initializes a bibim repository by creating index.md and settings.json."""
+
+    # check if the directory exists
+    if os.path.exists(BIBIM_DIR):
+        print("Error: bibim repository already exists.")
+        # exit(1)
+
     os.makedirs(BIBIM_DIR, exist_ok=True)
     cfg = Config.create(CONFIG_FILE)
     Index.create(cfg.index_path, cfg.index_template)
@@ -111,7 +112,11 @@ def add_reference(title: str, table_name: str | None = None):
         return
 
     # e.g., gim2023prompt
-    ref_id = f"{ref.author_last_names[0].lower()}{ref.year}{ref.title.split()[0].lower()}"
+
+    # using regex, replace all special characters with whitespace
+    title_first_word = re.sub(r'[^\w\s]', ' ', ref.title).split()[0]
+
+    ref_id = f"{ref.author_last_names[0].lower()}{ref.year}{title_first_word.lower()}"
     ref_page_path = os.path.join(cfg.reference_path, f"{ref_id}.md")
 
     # increment a, b, c, ... to the filename and see if it exists
@@ -132,8 +137,8 @@ def add_reference(title: str, table_name: str | None = None):
             "authors_concise": ref.author_concise,
             "venue": ref.venue,
             "year": ref.year,
-            "citations": ref.num_citations,
-            "reference": f"[{ref_page_path}]({ref_page_path})"
+            "num_citations": ref.num_citations,
+            "reference": ref_page_path
         },
         table_name=table_name)
 
@@ -142,14 +147,22 @@ def add_reference(title: str, table_name: str | None = None):
     print(f"Reference '{ref.title}' added as '{ref_id}'.")
 
 
-def update_references():
+def update_references(table_name: str | None = None):
     """Updates the references in the bibliography markdown file."""
 
     cfg = Config.load(CONFIG_FILE)
 
     index = Index.load(cfg.index_path, cfg.index_template)
 
+    if table_name is not None:
+        table_name_target = find_best_matching_table(list(index.tables.keys()), table_name)
+    else:
+        table_name_target = None
+
     for table_name, table in index.tables.items():
+
+        if table_name_target is not None and table_name != table_name_target:
+            continue
 
         for i, row in enumerate(table.rows):
             query = f"{row.entry['title']} {row.entry['authors_concise'].split()[-1]}"
@@ -168,8 +181,8 @@ def update_references():
                 "authors_concise": ref.author_concise,
                 "venue": ref.venue,
                 "year": ref.year,
-                "citations": ref.num_citations,
-                "reference": f"[{ref_path}]({ref_path})"
+                "num_citations": ref.num_citations,
+                "reference": ref_path
             }, table_name=table_name)
 
 
@@ -182,26 +195,33 @@ def generate_bibtex(path: str = 'references', condensed: bool = True):
 
     for table_name, table in index.tables.items():
 
-        lines.append("%" * 40)
-        lines.append(f"% {table_name}")
-        lines.append("%" * 40)
+        lines.append("%" * 40 + "\n")
+        lines.append(f"% {table_name}" + "\n")
+        lines.append("%" * 40 + "\n\n")
 
         for row in table.rows:
             page = ReferencePage.load(row.entry['reference'], cfg.reference_template)
 
             if condensed:
                 if page.ref.bibtex_condensed is None:
-                    lines.append(page.ref.bibtex)
+                    lines.append(page.ref.bibtex + "\n\n")
                 else:
-                    lines.append(page.ref.bibtex_condensed)
+                    lines.append(page.ref.bibtex_condensed + "\n\n")
             else:
-                lines.append(page.ref.bibtex)
+                lines.append(page.ref.bibtex + "\n\n")
 
     path = path + '.bib'
     with open(path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(lines))
+        f.write(''.join(lines))
 
-    print(f"Bibtex file '{path}.bib' has been generated.")
+    print(f"Bibtex file '{path}' has been generated.")
+
+
+def format_index():
+    cfg = Config.load(CONFIG_FILE)
+
+    index = Index.load(cfg.index_path, cfg.index_template)
+    index.format()
 
 
 def main():
@@ -214,9 +234,13 @@ def main():
     parser_add.add_argument('--table', help='Table name', default=None)
 
     parser_update = subparsers.add_parser('update', help='Update the references')
+    parser_update.add_argument('--table', help='Table name', default=None)
+
     parser_bibtex = subparsers.add_parser('bibtex', help='Generate a bibtex file')
     parser_bibtex.add_argument('--path', help='Bibtex file', default='ref')
     parser_bibtex.add_argument('--condensed', help='Markdown file', default=True)
+
+    parser_format = subparsers.add_parser('format', help='Format the markdown file')
 
     args = parser.parse_args()
 
@@ -225,9 +249,11 @@ def main():
     elif args.command == 'add':
         add_reference(args.title, args.table)
     elif args.command == 'update':
-        update_references()
+        update_references(args.table)
     elif args.command == 'bibtex':
         generate_bibtex(args.path, args.condensed)
+    elif args.command == 'format':
+        format_index()
     else:
         parser.print_help()
 

@@ -3,6 +3,51 @@ from __future__ import annotations
 import re
 
 
+def find_best_matching_table(table_titles: list[str], query: str) -> str | None:
+    # Preprocess the query
+    query_lower = query.lower()
+    query_words = set(re.findall(r'\w+', query_lower))
+
+    # Check for exact matches (case-insensitive)
+    for title in table_titles:
+        if title.lower() == query_lower:
+            return title
+
+    # Check for substring matches (case-insensitive)
+    for title in table_titles:
+        if query_lower in title.lower():
+            return title
+        if title.lower() in query_lower:
+            return title
+
+    # Compute Jaccard similarity between the query and each paper title
+    max_similarity = 0
+    best_match = None
+
+    for title in table_titles:
+        title_lower = title.lower()
+        title_words = set(re.findall(r'\w+', title_lower))
+
+        # Calculate Jaccard similarity
+        intersection = query_words & title_words
+        union = query_words | title_words
+        if not union:
+            continue
+        similarity = len(intersection) / len(union)
+
+        # Update the best match if the similarity is higher
+        if similarity > max_similarity:
+            max_similarity = similarity
+            best_match = title
+
+    # Return the best match if similarity is above a threshold
+    threshold = 0.5
+    if max_similarity >= threshold:
+        return best_match
+    else:
+        return None
+
+
 def extract_between(text: str, prefix: str, suffix: str) -> str | None:
     pattern = re.escape(prefix) + r'(.+?)' + re.escape(suffix)
     match = re.search(pattern, text)
@@ -47,19 +92,18 @@ class Index:
         header_widths = dict(zip(template.columns, [len(h) for h in headers]))
 
         lines = [
-            template.separator[0] + 'Index' + template.separator[1],
-            '| ' + ' | '.join(headers) + ' |',
-            '| ' + ' | '.join(['-' * header_widths[h] for h in headers]) + ' |'
+            template.separator[0] + 'Index' + template.separator[1] + '\n',
+            '| ' + ' | '.join(headers) + ' |\n',
+            '|' + '|'.join(['-' * (header_widths[c] + 2) for c in template.columns]) + '|\n'
         ]
 
         with open(path, 'w') as f:
-            f.writelines(lines)
+            f.write(''.join(lines))
 
         return Index.load(path, template)
 
     @staticmethod
     def load(path: str, template: IndexTemplate) -> Index:
-
         index = Index(path, template)
 
         # Load tables from path
@@ -67,31 +111,34 @@ class Index:
             lines = f.readlines()
 
         # Find the start of the table
-        _table_signature = re.sub(r'\s+', '', '|'.join(template.columns))
+        _headers = [template.headers[c] for c in template.columns]
+        _table_signature = re.sub(r'\s+', '', '|' + '|'.join(_headers) + '|')
         table_title = None
 
         i = 0
-
         while i < len(lines):
             line = lines[i]
             _table_title = extract_between(line, template.separator[0], template.separator[1])
+
             if _table_title:
                 table_title = _table_title
 
             # remove all whitespace in line using regex
+            i += 1
             if _table_signature != re.sub(r'\s+', '', line):
-                i += 1
                 continue
-
-            table_start = i + 2  # skip the header line and the separator line
+            # print('found table', table_title)
+            table_start = i + 1  # skip the header line and the separator line
+            # print('table start', table_start)
 
             # find the end of the table
             while i < len(lines):
-                if not line.strip().startswith('|'):
+                if not lines[i].strip().startswith('|'):
                     break
                 i += 1
 
             table_end = i
+            # print('table end', table_end)
 
             if table_end <= table_start:
                 # empty table
@@ -99,11 +146,11 @@ class Index:
                 continue
 
             table_lines = lines[table_start:table_end]
-
             # parse table lines
             table = Table(table_start, table_end)
             for line in table_lines:
                 values = [strip_markdown_link(v.strip()) for v in line.strip().strip('|').split('|')]
+
                 entry = dict(zip(template.columns, values))
                 row = Row(table, entry)
                 table.rows.append(row)
@@ -114,12 +161,15 @@ class Index:
 
     def update_row(self, idx: int, values: dict[str, str], table_name: str | None = None) -> bool:
 
-        if table_name:
-            if table_name not in self.tables:
-                return False
-            table = self.tables[table_name]
+        if not table_name:
+            table_name = list(self.tables.keys())[0]
         else:
-            table = self.tables[list(self.tables.keys())[0]]
+            table_name = find_best_matching_table(list(self.tables.keys()), table_name)
+
+        if table_name is None:
+            return False
+
+        table = self.tables[table_name]
 
         if idx < 0 or idx >= len(table.rows):
             return False
@@ -132,18 +182,25 @@ class Index:
 
     def insert_row(self, values: dict[str, str], table_name: str | None = None) -> bool:
 
-        if table_name:
-            if table_name not in self.tables:
-                return False
-            table = self.tables[table_name]
+        if not table_name:
+            table_name = list(self.tables.keys())[0]
         else:
-            table = self.tables[list(self.tables.keys())[0]]
+            table_name = find_best_matching_table(list(self.tables.keys()), table_name)
+
+        if table_name is None:
+            return False
+
+        table = self.tables[table_name]
 
         row = Row(table, values)
         table.rows.append(row)
 
         self._write_table(table_name)
         return True
+
+    def format(self):
+        for table_name in self.tables:
+            self._write_table(table_name)
 
     def _write_table(self, table_name: str):
 
@@ -153,12 +210,17 @@ class Index:
         header_widths = dict(zip(self.template.columns, [len(h) for h in headers]))
 
         for row in table.rows:
+
+            # linkify reference
+            if 'reference' in row.entry:
+                row.entry['reference'] = f"[{row.entry["reference"]}]({row.entry['reference']})"
+
             for c in self.template.columns:
                 header_widths[c] = max(header_widths[c], len(row.entry[c]))
 
         lines = [
-            '| ' + ' | '.join([h.ljust(header_widths[h]) for h in headers]) + ' |',
-            '| ' + ' | '.join(['-' * header_widths[h] for h in headers]) + ' |'
+            '| ' + ' | '.join([self.template.headers[c].ljust(header_widths[c]) for c in self.template.columns]) + ' |\n',
+            '|' + '|'.join(['-' * (header_widths[c] + 2) for c in self.template.columns]) + '|\n'
         ]
 
         for row in table.rows:
@@ -166,7 +228,7 @@ class Index:
                                .replace('|', '\\|')
                                .ljust(header_widths[c])
                                for c in self.template.columns]
-            row = '| ' + ' | '.join(entry_formatted) + ' |'
+            row = '| ' + ' | '.join(entry_formatted) + ' |\n'
             lines.append(row)
 
         # Read the file into a list of lines
@@ -174,14 +236,14 @@ class Index:
             lines_old = file.readlines()
 
         # Replace lines from n to m (inclusive)
-        lines_new = lines_old[:table.start_line - 2] + lines + lines_old[table.end_line + 1:]
-        end_line_new = table.start_line + (len(lines) - 2) - 1
+        lines_new = lines_old[:table.start_line - 2] + lines + lines_old[table.end_line:]
+        end_line_new = table.start_line + len(table.rows)
 
         delta = end_line_new - table.end_line
 
         # Write the updated lines back to the file
         with open(self.path, 'w') as file:
-            file.writelines(lines_new)
+            file.write(''.join(lines_new))
 
         table.end_line = end_line_new
 

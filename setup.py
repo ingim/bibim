@@ -15,7 +15,6 @@ setup(
     install_requires=[
         'requests',
         'scholarly',
-        'openai',
         'feedparser'
     ],
     entry_points={

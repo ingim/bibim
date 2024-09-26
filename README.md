@@ -78,8 +78,6 @@ bibim bibtex
 
 We welcome pull requests. For major changes, please open an issue to discuss your ideas before contributing.
 
-## Misc
-The first version of bibim was almost entirely written by ChatGPT (o1-preview).
 
 ## License
 

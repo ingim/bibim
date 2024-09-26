@@ -2,19 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 
-from bibim.index import extract_between
+from .index import extract_between
 
 
 @dataclass
 class Reference:
-    author: str
-    title: str
-    year: str
-    bibtex: str
-    bibtex_condensed: str | None
-    venue: str | None
-    url: str | None
-    num_citations: str | None
+    author: str | None = None
+    title: str | None = None
+    year: str | None = None
+    bibtex: str | None = None
+    bibtex_condensed: str | None = None
+    venue: str | None = None
+    url: str | None = None
+    num_citations: str | None = None
 
     @property
     def author_last_names(self) -> list[str]:
@@ -22,10 +22,14 @@ class Reference:
 
     @property
     def author_concise(self):
-        return [
+
+        res = [
             "".join([n[0].upper() for n in a.split()[:-1]]) + " " + a.split()[-1]
             for a in self.author.split(',')
         ]
+        if len(res) > 2:
+            res = [res[0], f"+{len(res) - 2}", res[-1]]
+        return ", ".join(res)
 
     def __eq__(self, other):
         if self.title.lower() != other.title.lower():
@@ -62,9 +66,14 @@ class ReferencePage:
 
         page = ReferencePage(path, ref, template)
 
-        contents = template.layout.format_map(asdict(ref))
-        contents += "\n\n" + "```bibtex\n" + ref.bibtex + "\n```"
-        contents += "\n\n" + "```bibtex\n" + ref.bibtex_condensed + "\n```"
+        res = {}
+        for k, v in asdict(ref).items():
+            if k in template.entries:
+                res[k] = template.entries[k][0] + v + template.entries[k][1]
+
+        contents = template.layout.format_map(res)
+        contents += "\n\n" + "```bibtex\n" + ref.bibtex.strip() + "\n```"
+        contents += "\n\n" + "```bibtex\n" + ref.bibtex_condensed.strip() + "\n```"
 
         with open(path, 'w') as f:
             f.write(contents)
@@ -94,7 +103,7 @@ class ReferencePage:
 
             if line.startswith("```") and parsing_bibtex:
                 parsing_bibtex = False
-                bibtext.append('\n'.join(bibtex_lines))
+                bibtext.append(''.join(bibtex_lines).strip())
                 continue
 
             if parsing_bibtex:
