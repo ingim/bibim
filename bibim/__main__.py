@@ -100,6 +100,21 @@ def initialize_repository():
     print("Initialized bibim repository.")
 
 
+# Google Scholar style. e.g., gim2023prompt
+def bibtex_entry_name(author_last_names: list[str], year: str, title: str) -> str:
+    # Define a set of meaningless articles to ignore
+    meaningless_articles = {"a", "an", "the"}
+
+    # Using regex, replace all special characters with whitespace
+    title_words = re.sub(r'[^\w\s]', ' ', title).split()
+
+    # Find the first meaningful word (not an article)
+    title_first_word = next((word for word in title_words if word.lower() not in meaningless_articles), "")
+
+    # If there's no valid word, return just the author's last name and year
+    return f"{author_last_names[0].lower()}{year}{title_first_word.lower()}"
+
+
 def add_reference(title: str, table_name: str | None = None):
     """Adds a reference to the bibliography markdown file."""
 
@@ -115,12 +130,8 @@ def add_reference(title: str, table_name: str | None = None):
     if not ref:
         return
 
-    # e.g., gim2023prompt
+    ref_id = bibtex_entry_name(ref.author_last_names, ref.year, ref.title)
 
-    # using regex, replace all special characters with whitespace
-    title_first_word = re.sub(r'[^\w\s]', ' ', ref.title).split()[0]
-
-    ref_id = f"{ref.author_last_names[0].lower()}{ref.year}{title_first_word.lower()}"
     ref_page_path = os.path.join(cfg.reference_path, f"{ref_id}.md")
 
     # increment a, b, c, ... to the filename and see if it exists
